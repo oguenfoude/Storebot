@@ -1,12 +1,12 @@
 import { Request, Response } from "express";
 import { ObjectId } from "mongodb";
-import { History } from "../models/history"; // Assuming this is the path to your model
-import { db } from "../db"; // Your database connection file, replace with actual path
+import { History } from "../models/history";
+import { connectToDB } from "../db";
 
-// Controller to get all history records
 export const getAllHistory = async (req: Request, res: Response) => {
   try {
-    const history = await db.collection<History>("history").find().toArray(); // Fetch all history entries
+    const db = await connectToDB();
+    const history = await db.collection<History>("history").find().toArray();
     res.status(200).json({
       success: true,
       data: history,
@@ -20,7 +20,6 @@ export const getAllHistory = async (req: Request, res: Response) => {
   }
 };
 
-// Controller to get history by ID
 export const getHistoryById = async (req: Request, res: Response) => {
   const { id } = req.params;
 
@@ -32,6 +31,7 @@ export const getHistoryById = async (req: Request, res: Response) => {
   }
 
   try {
+    const db = await connectToDB();
     const history = await db
       .collection<History>("history")
       .findOne({ _id: new ObjectId(id) });

@@ -1,12 +1,24 @@
 import { MyContext } from "../types";
 import { connectToDB } from "../db";
 import { User } from "../models/user";
-import { Keyboard } from "grammy";
+import { InlineKeyboard, Keyboard } from "grammy";
+import { sendToAdmin } from "../helpers/adminNotificationHelper";
 
-// Define admin Telegram ID from environment
-import { sendToAdmin } from '../helpers/adminNotificationHelper';
+export const getMainMenuKeyboard = () =>
+  new Keyboard()
+    .text("الرصيد")
+    .text("المنتجات")
+    .row()
+    .text("حسابي")
+    .text("الدعم الفني")
+    .resized();
 
-// Handle the "/start" command
+export const showMainMenu = async (ctx: MyContext, name: string) => {
+  await ctx.reply(`أهلاً بك يا ${name} في القائمة الرئيسية:`, {
+    reply_markup: getMainMenuKeyboard(),
+  });
+};
+
 export const handleStartCommand = async (ctx: MyContext) => {
   try {
     const telegramId = ctx.from?.id.toString();
@@ -16,17 +28,15 @@ export const handleStartCommand = async (ctx: MyContext) => {
 
     if (!telegramId || !chatId) {
       console.warn("Missing telegramId or chatId.");
-      return ctx.reply("❌ حدث خطأ في التعرف على المستخدم.");
+      return ctx.reply("حدث خطأ في التعرف على المستخدم.");
     }
 
     const db = await connectToDB();
     const userCollection = db.collection<User>("users");
 
-    // Check if the user exists in the database
     let user = await userCollection.findOne({ telegramId });
 
     if (!user) {
-      // Register a new user
       const newUser: User = {
         telegramId,
         chatId,
@@ -40,34 +50,36 @@ export const handleStartCommand = async (ctx: MyContext) => {
       };
 
       await userCollection.insertOne(newUser);
-
-      // Ask for full name first
       ctx.session.awaitingFullName = true;
-      await ctx.reply("🔤 يُرجى إدخال اسمك الكامل:");
+      await ctx.reply("يرجى إدخال اسمك الكامل:", {
+        reply_markup: { remove_keyboard: true }
+      });
       return;
     }
 
-    // Check user status and guide accordingly
     if (!user.fullName) {
       ctx.session.awaitingFullName = true;
-      await ctx.reply("🔤 يُرجى إدخال اسمك الكامل:");
+      await ctx.reply("يرجى إدخال اسمك الكامل:", {
+        reply_markup: { remove_keyboard: true }
+      });
     } else if (!user.phoneNumber) {
       ctx.session.awaitingPhoneNumber = true;
-      await ctx.reply("📞 يُرجى إدخال رقم هاتفك:");
-    } else if (!user.isAccepted) {
-      await ctx.reply(
-        "🔒 شكرًا لتسجيلك. حسابك قيد المراجعة. يُرجى الانتظار حتى يتم قبوله."
-      );
+      await ctx.reply("يرجى إدخال رقم هاتفك:", {
+        reply_markup: { remove_keyboard: true }
+      });
     } else {
+      if (!user.isAccepted) {
+        await ctx.reply("حسابك قيد المراجعة حاليًا من قبل الإدارة. يرجى الانتظار حتى يتم تفعيله.");
+        return;
+      }
       await showMainMenu(ctx, user.fullName || "مستخدم");
     }
   } catch (error) {
     console.error("Error in handleStartCommand:", error);
-    await ctx.reply("❌ حدث خطأ أثناء التسجيل. يُرجى المحاولة لاحقًا.");
+    await ctx.reply("حدث خطأ أثناء التسجيل. يرجى المحاولة لاحقًا.");
   }
 };
 
-// Handle user input for the full name
 export const handleFullNameInput = async (ctx: MyContext): Promise<void> => {
   try {
     const telegramId = ctx.from?.id.toString();
@@ -75,26 +87,32 @@ export const handleFullNameInput = async (ctx: MyContext): Promise<void> => {
 
     const fullName = ctx.message?.text;
     if (!fullName || fullName.trim().length < 3) {
-      await ctx.reply("❌ يُرجى إدخال اسم كامل صالح (على الأقل 3 أحرف).");
+      await ctx.reply("يرجى إدخال اسم كامل صالح (على الأقل 3 أحرف).");
       ctx.session.awaitingFullName = true;
-      await ctx.reply("🔤 يُرجى إدخال اسمك الكامل:");
+      await ctx.reply("يرجى إدخال اسمك الكامل:");
       return;
     }
 
     const db = await connectToDB();
-    const result = await db
+    await db
       .collection<User>("users")
       .updateOne({ telegramId }, { $set: { fullName } });
 
     ctx.session.awaitingFullName = false;
     ctx.session.awaitingPhoneNumber = true;
 
+    const keyboard = new Keyboard()
+      .requestContact("مشاركة رقم الهاتف")
+      .oneTime()
+      .resized();
+
     await ctx.reply(
-      "✅ تم حفظ اسمك الكامل بنجاح.\n\n📞 يُرجى الآن إدخال رقم هاتفك:"
+      "تم حفظ اسمك الكامل بنجاح. يرجى مشاركة رقم هاتفك باستخدام الزر أدناه:",
+      { reply_markup: keyboard }
     );
   } catch (error) {
     console.error("Error in handleFullNameInput:", error);
-    await ctx.reply("❌ حدث خطأ أثناء حفظ اسمك الكامل. يُرجى المحاولة لاحقًا.");
+    await ctx.reply("حدث خطأ أثناء حفظ اسمك الكامل. يرجى المحاولة لاحقًا.");
   }
 };
 
@@ -103,9 +121,13 @@ export const handlePhoneNumberInput = async (ctx: MyContext): Promise<void> => {
     const telegramId = ctx.from?.id.toString();
     if (!telegramId) return;
 
-    const phoneNumber = ctx.message?.text;
+    let phoneNumber = ctx.message?.contact?.phone_number || ctx.message?.text;
+    if (phoneNumber) {
+      phoneNumber = phoneNumber.replace(/\+/g, "").trim();
+    }
+
     if (!phoneNumber || !/^\d{10,15}$/.test(phoneNumber)) {
-      await ctx.reply("❌ يُرجى إدخال رقم هاتف صالح.");
+      await ctx.reply("يرجى إدخال رقم هاتف صالح أو مشاركة رقم هاتفك بالضغط على الزر.");
       return;
     }
 
@@ -115,29 +137,33 @@ export const handlePhoneNumberInput = async (ctx: MyContext): Promise<void> => {
       .updateOne({ telegramId }, { $set: { phoneNumber } });
 
     ctx.session.awaitingPhoneNumber = false;
+
+    const updatedUser = await db.collection<User>("users").findOne({ telegramId });
+    if (updatedUser) {
+      await sendAdminNotification(ctx, updatedUser);
+    }
+
     await ctx.reply(
-      "✅ شكرًا لك! تم حفظ رقم هاتفك بنجاح.\n\n🔒 حسابك قيد المراجعة. سيتم إعلامك عند القبول."
+      "تم حفظ رقم هاتفك بنجاح. حسابك قيد المراجعة حاليًا من قبل الإدارة. سنقوم بإشعارك فور تفعيله.",
+      { reply_markup: { remove_keyboard: true } }
     );
   } catch (error) {
     console.error("Error in handlePhoneNumberInput:", error);
-    await ctx.reply("❌ حدث خطأ أثناء حفظ رقم هاتفك. يُرجى المحاولة لاحقًا.");
+    await ctx.reply("حدث خطأ أثناء حفظ رقم هاتفك. يرجى المحاولة لاحقًا.");
   }
 };
 
-// Notify admin of a new user
 export const sendAdminNotification = async (ctx: MyContext, user: User) => {
   try {
-    const message = `🆕 *مستخدم جديد*
+    const message = `مستخدم جديد مسجل
+    
+الاسم: ${user.fullName || "غير محدد"}
+اسم المستخدم: ${user.username || "غير محدد"}
+معرف التليجرام: \`${user.telegramId}\`
+رقم الهاتف: ${user.phoneNumber || "غير محدد"}
+تاريخ التسجيل: ${user.registerDate ? user.registerDate.toLocaleDateString() : "غير محدد"}
 
-*الاسم:* ${user.fullName || "غير محدد"}
-*اسم المستخدم:* ${user.username || "غير محدد"}
-*معرف التليجرام:* \`${user.telegramId}\`
-*رقم الهاتف:* ${user.phoneNumber || "غير محدد"}
-*تاريخ التسجيل:* ${user.registerDate ? user.registerDate.toLocaleDateString() : "غير محدد"}
-
-*الإجراءات:*
-• يرجى مراجعة وقبول المستخدم
-• تحقق من صحة المعلومات المقدمة`;
+بانتظار موافقة المسؤول لتفعيل الحساب.`;
 
     await sendToAdmin(message, {
       parse_mode: "Markdown",
@@ -147,33 +173,5 @@ export const sendAdminNotification = async (ctx: MyContext, user: User) => {
     console.log(`Admin notification sent for user: ${user.telegramId}`);
   } catch (error) {
     console.error("Error sending admin notification:", error);
-  }
-};
-
-// Show the main menu once the user is approved
-const showMainMenu = async (ctx: MyContext, name: string) => {
-  try {
-    const keyboard = new Keyboard()
-      .text("📊 عرض الرصيد")
-      .text("🛍️ عرض المنتجات")
-      .text("حسابي")
-      .row()
-      .text("📞 التواصل مع الدعم")
-      .text("تحديث")
-      .resized();
-
-    await ctx.reply(
-      `مرحبًا ${name}! 👋\n\nيمكنك الآن استخدام البوت. 🥳 \n\nتم تحديث البوت بنجاح استمتع بالممزيات الجديدة`,
-      {
-        reply_markup: {
-          keyboard: keyboard.build(),
-          resize_keyboard: true,
-          one_time_keyboard: false,
-        },
-      }
-    );
-  } catch (error) {
-    console.error("Error in showMainMenu:", error);
-    await ctx.reply("❌ حدث خطأ أثناء عرض القائمة الرئيسية.");
   }
 };

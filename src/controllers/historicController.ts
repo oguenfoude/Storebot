@@ -3,7 +3,6 @@ import { connectToDB } from "../db";
 import { ComprehensiveHistory } from "../models/comprehensiveHistory";
 import { ObjectId } from "mongodb";
 
-// Fetch all historic records
 export const getAllHistoricEntries = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -18,7 +17,6 @@ export const getAllHistoricEntries = async (req: Request, res: Response) => {
   }
 };
 
-// Fetch all history records for a specific entity (user or product)
 export const getEntityHistoricEntries = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -44,7 +42,6 @@ export const getEntityHistoricEntries = async (req: Request, res: Response) => {
   }
 };
 
-// Delete a historic record by ID
 export const deleteHistoricEntryById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();

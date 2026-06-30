@@ -3,7 +3,6 @@ import { ObjectId } from "mongodb";
 import { connectToDB } from "../db";
 import { Category } from "../models/category";
 
-// Fetch all categories
 export const getAllCategories = async (_req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -18,13 +17,11 @@ export const getAllCategories = async (_req: Request, res: Response) => {
   }
 };
 
-// Fetch a single category by ID
 export const getCategoryById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
     const categoryId = new ObjectId(req.params.id);
 
-    // Fetch category
     const category = await db
       .collection<Category>("categories")
       .findOne({ _id: categoryId });
@@ -38,13 +35,11 @@ export const getCategoryById = async (req: Request, res: Response) => {
   }
 };
 
-// Create a new category
 export const createCategory = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
     const { name } = req.body;
 
-    // Validate input
     if (!name) {
       return res.status(400).json({ error: "Category name is required" });
     }
@@ -55,7 +50,6 @@ export const createCategory = async (req: Request, res: Response) => {
       isActive: true,
     };
 
-    // Insert category
     const result = await db
       .collection<Category>("categories")
       .insertOne(newCategory);
@@ -70,14 +64,12 @@ export const createCategory = async (req: Request, res: Response) => {
   }
 };
 
-// Update a category
 export const updateCategoryById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
     const categoryId = new ObjectId(req.params.id);
     const { name, isActive } = req.body;
 
-    // Find existing category
     const existingCategory = await db
       .collection<Category>("categories")
       .findOne({ _id: categoryId });
@@ -86,12 +78,10 @@ export const updateCategoryById = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Category not found" });
     }
 
-    // Prepare update
     const updatedFields: Partial<Category> = { ...existingCategory };
     if (name) updatedFields.name = name;
     if (typeof isActive === "boolean") updatedFields.isActive = isActive;
 
-    // Update category
     await db
       .collection<Category>("categories")
       .updateOne({ _id: categoryId }, { $set: updatedFields });
@@ -106,13 +96,11 @@ export const updateCategoryById = async (req: Request, res: Response) => {
   }
 };
 
-// Delete a category
 export const deleteCategoryById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
     const categoryId = new ObjectId(req.params.id);
 
-    // Find existing category
     const existingCategory = await db
       .collection<Category>("categories")
       .findOne({ _id: categoryId });
@@ -121,7 +109,6 @@ export const deleteCategoryById = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Category not found" });
     }
 
-    // Delete category
     await db.collection<Category>("categories").deleteOne({ _id: categoryId });
 
     res.status(200).json({

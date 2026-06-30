@@ -1,12 +1,10 @@
-// src/controllers/notificationController.ts
 import { Request, Response } from "express";
 import { ObjectId } from "mongodb";
 import { connectToDB } from "../db";
 import { Notification } from "../models/notification";
-import { bot } from "../bot"; // Import the bot instance
+import { bot } from "../botInstance";
 import { User } from "../models/user";
 
-// Fetch all notifications
 export const getAllNotifications = async (_req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -22,7 +20,6 @@ export const getAllNotifications = async (_req: Request, res: Response) => {
   }
 };
 
-// Fetch a single notification by ID
 export const getNotificationById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -39,7 +36,6 @@ export const getNotificationById = async (req: Request, res: Response) => {
   }
 };
 
-// Create a new notification
 export const createNotification = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -69,7 +65,6 @@ export const createNotification = async (req: Request, res: Response) => {
   }
 };
 
-// Update a notification by ID
 export const updateNotificationById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -104,7 +99,6 @@ export const updateNotificationById = async (req: Request, res: Response) => {
   }
 };
 
-// Delete a notification by ID
 export const deleteNotificationById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -130,7 +124,6 @@ export const deleteNotificationById = async (req: Request, res: Response) => {
   }
 };
 
-// Send a notification to all users
 export const sendNotificationById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -147,7 +140,7 @@ export const sendNotificationById = async (req: Request, res: Response) => {
       .find({ isAccepted: true }, { projection: { telegramId: 1 } })
       .toArray();
 
-    const BROADCAST_RATE = 30; // Messages per second
+    const BROADCAST_RATE = 30;
     let count = 0;
 
     for (const user of users) {

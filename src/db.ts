@@ -1,24 +1,26 @@
-// src/db.ts
 import dotenv from "dotenv";
 import { MongoClient, Db } from "mongodb";
 
 dotenv.config();
+
 const dbName = process.env.DBName;
-const uri: string =
-  process.env.MONGODB_URI ||
-  `mongodb+srv://admin:admin@chamso.nq0nw.mongodb.net/?retryWrites=true&w=majority&appName=${dbName}`;
-const client: MongoClient = new MongoClient(uri);
+if (!dbName) {
+  throw new Error("DBName is not set in environment variables.");
+}
 
-let isConnected: boolean = false;
+const uri = process.env.MONGODB_URI;
+if (!uri) {
+  throw new Error("MONGODB_URI is not set in environment variables.");
+}
 
-// Function to connect to MongoDB
+const client = new MongoClient(uri);
+let isConnected = false;
+
 export const connectToDB = async (): Promise<Db> => {
   if (!isConnected) {
     await client.connect();
     isConnected = true;
     console.log("Connected to MongoDB successfully.");
   }
-  return client.db(dbName); // Replace 'chamso' with your database name
+  return client.db(dbName);
 };
-
-export const db = client.db(dbName);

@@ -1,13 +1,12 @@
 import { ObjectId } from "mongodb";
 
-// Define the types for the Product's history
 export interface ProductHistoryEntry {
-  action: "create" | "update" | "delete" | "sale"; // Added 'sale' to the action type
+  action: "create" | "update" | "delete" | "sale";
   date: Date;
   details: string;
   updatedFields?: Record<string, any>;
-  userDetails?: { fullName: string; phone: string }; // Optional user details
-  productDetails?: { productName: string; categoryName: string }; // Optional product details
+  userDetails?: { fullName: string; phone: string };
+  productDetails?: { productName: string; categoryName: string };
 }
 
 export interface Product {
@@ -22,10 +21,9 @@ export interface Product {
   createdDate: Date;
   archive: Array<any>;
   salesHistory?: ProductSaleEvent[];
-  history?: ProductHistoryEntry[]; // Ensure history is defined as an array if you are pushing to it
+  history?: ProductHistoryEntry[];
 }
 
-// Define the Sale Event model (unchanged)
 export interface ProductSaleEvent {
   userId: ObjectId;
   fullName: string;

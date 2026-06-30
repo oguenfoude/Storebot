@@ -7,7 +7,6 @@ import {
   ProductHistoryEntry,
 } from "../models/product";
 
-// Utility function to save history inside the Product model and in the history collection
 const saveToHistory = async (
   productId: ObjectId,
   action: "create" | "update" | "delete" | "sale",
@@ -18,7 +17,6 @@ const saveToHistory = async (
 ) => {
   const db = await connectToDB();
 
-  // Construct the history entry
   const historyEntry: ProductHistoryEntry = {
     action,
     date: new Date(),
@@ -35,7 +33,6 @@ const saveToHistory = async (
       : undefined,
   };
 
-  // Save to product's history array
   const productUpdateResult = await db
     .collection("products")
     .updateOne({ _id: productId }, { $push: { history: historyEntry } as any });
@@ -44,7 +41,6 @@ const saveToHistory = async (
     console.error("Failed to update product history for product:", productId);
   }
 
-  // Save to global history collection
   const historySaveResult = await db.collection("history").insertOne({
     ...historyEntry,
     productId,
@@ -55,7 +51,6 @@ const saveToHistory = async (
   }
 };
 
-// Create a new product
 export const createProduct = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -75,7 +70,6 @@ export const createProduct = async (req: Request, res: Response) => {
 
     const categoryObjectId = new ObjectId(categoryId);
 
-    // Prepare product object
     const newProduct: Product = {
       _id: new ObjectId(),
       name,
@@ -90,19 +84,16 @@ export const createProduct = async (req: Request, res: Response) => {
       history: [],
     };
 
-    // Insert product
     const result = await db
       .collection<Product>("products")
       .insertOne(newProduct);
 
-    // Fetch category name for the history entry
     const category = await db
       .collection("categories")
       .findOne({ _id: categoryObjectId });
 
     const categoryName = category ? category.name : "Unknown Category";
 
-    // Save creation to history
     await saveToHistory(
       newProduct._id,
       "create",
@@ -125,7 +116,6 @@ export const createProduct = async (req: Request, res: Response) => {
   }
 };
 
-// Update a product by ID
 export const updateProductById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -262,7 +252,6 @@ export const updateProductById = async (req: Request, res: Response) => {
   }
 };
 
-// Delete a product by ID
 export const deleteProductById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -354,7 +343,6 @@ export const deleteProductById = async (req: Request, res: Response) => {
 export const getAllProducts = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
-    // Fetch all products from the 'products' collection
     const products = await db.collection<Product>("products").find().toArray();
 
     if (!products.length) {
@@ -371,18 +359,15 @@ export const getAllProducts = async (req: Request, res: Response) => {
   }
 };
 
-// Get product by ID
 export const getProductById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
     const { id } = req.params;
 
-    // Validate the product ID
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid product ID format" });
     }
 
-    // Fetch the product by its ID
     const product = await db
       .collection<Product>("products")
       .findOne({ _id: new ObjectId(id) });
@@ -401,11 +386,9 @@ export const getProductById = async (req: Request, res: Response) => {
   }
 };
 
-// Get archived products
 export const getArchivedProducts = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
-    // Fetch all archived products from the 'product_archive' collection
     const archivedProducts = await db
       .collection("product_archive")
       .find()

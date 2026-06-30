@@ -1,15 +1,14 @@
 import { ObjectId } from "mongodb";
-import { bot } from "../bot";
+import { bot } from "../botInstance";
 import { connectToDB } from "../db";
 import { PreOrder } from "../models/preorder";
-import { ComprehensiveHistory } from "../models/comprehensiveHistory"; // Updated import
+import { ComprehensiveHistory } from "../models/comprehensiveHistory";
 import { User } from "../models/user";
 import { Product } from "../models/product";
-import { AdminMessages, UserMessages, ErrorMessages } from "../utils/messages";
+import { AdminMessages, UserMessages, ErrorMessages, safeSendMessage } from "../utils/messages";
 
 import { sendToAdmin } from '../helpers/adminNotificationHelper';
 
-// Function to create a pre-order
 export const createPreOrderInDB = async (
   userId: ObjectId,
   productId: ObjectId,
@@ -17,7 +16,6 @@ export const createPreOrderInDB = async (
 ): Promise<PreOrder | null> => {
   const db = await connectToDB();
 
-  // Fetch user and product
   const user = await db.collection<User>("users").findOne({ _id: userId });
   const product = await db
     .collection<Product>("products")
@@ -32,7 +30,6 @@ export const createPreOrderInDB = async (
     );
   }
 
-  // Deduct balance and log history
   const newBalance = user.balance - product.price;
   await db
     .collection<User>("users")
@@ -44,30 +41,24 @@ export const createPreOrderInDB = async (
     productId,
     date: new Date(),
     status: "pending",
-    message, // User's message
+    message,
     userName: user.username,
-    fullName: user.fullName || "غير متوفر", // Full name
+    fullName: user.fullName || "غير متوفر",
     userTelegramId: user.telegramId,
     productName: product.name,
     productPrice: product.price,
   };
 
-  // Insert pre-order into database
   await db.collection<PreOrder>("preorders").insertOne(newPreOrder);
 
-  // Log pre-order creation in history
-  await logPreOrderHistory(newPreOrder, message); // Save the user's message
+  await logPreOrderHistory(newPreOrder, message);
 
   return newPreOrder;
 };
 
-/**
- * Logs pre-order creation in the history.
- */
 const logPreOrderHistory = async (preOrder: PreOrder, userMessage: string) => {
   const db = await connectToDB();
 
-  // Fetch product category name
   const product = await db
     .collection<Product>("products")
     .findOne({ _id: new ObjectId(preOrder.productId) });
@@ -83,33 +74,28 @@ const logPreOrderHistory = async (preOrder: PreOrder, userMessage: string) => {
   const historyEntry: ComprehensiveHistory = {
     _id: new ObjectId(),
     userId: preOrder.userId,
-    actionType: "preOrder", // Action type: 'preOrder'
+    actionType: "preOrder",
     date: new Date(),
     description: `طلب مسبق للمنتج '${preOrder.productName}' من المستخدم '${preOrder.userName}' مع الرسالة: ${userMessage}`,
     productId: preOrder.productId,
     productName: preOrder.productName,
     price: preOrder.productPrice,
-    categoryName, // Save category name in history
-    userMessage, // Save the user's message
+    categoryName,
+    userMessage,
   };
 
   await db.collection<ComprehensiveHistory>("history").insertOne(historyEntry);
 };
 
-/**
- * Sends a confirmation message to the user.
- */
 export const notifyUserAboutPreOrder = async (preOrder: PreOrder) => {
-  try {    const userMessage = UserMessages.preorderSuccess(preOrder.productName);
-    await bot.api.sendMessage(preOrder.userTelegramId, userMessage);
+  try {
+    const userMessage = UserMessages.preorderSuccess(preOrder.productName);
+    await safeSendMessage(preOrder.userTelegramId, userMessage);
   } catch (error) {
     console.error("Error sending pre-order confirmation to user:", error);
   }
 };
 
-/**
- * Sends a notification about the pre-order to the admin.
- */
 export const notifyAdminAboutPreOrder = async (preOrder: PreOrder) => {
   try {
     const adminMessage = AdminMessages.notifyAdminPreOrder(

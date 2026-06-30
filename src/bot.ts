@@ -1,12 +1,17 @@
-import { Bot, Context, session, SessionFlavor } from "grammy";
+import { session } from "grammy";
 import dotenv from "dotenv";
-import { MongoClient } from "mongodb"; // Assuming MongoDB for user data storage
+import { connectToDB } from "./db";
+import { User } from "./models/user";
+import { MyContext } from "./types";
+import { bot } from "./botInstance";
 import {
   handleStartCommand,
   handleFullNameInput,
   handlePhoneNumberInput,
+  showMainMenu,
+  getMainMenuKeyboard,
 } from "./commands/start";
-import { handleBalanceCommand } from "./commands/balance";
+import { handleBalanceView } from "./commands/balance";
 import {
   handleProductsCommand,
   handleCategorySelection,
@@ -18,41 +23,17 @@ import {
   handleCancelPurchase,
   handlePreOrderConfirmation,
 } from "./commands/buy";
-import { handleAccountCommand } from "./commands/account";
-import { handleSupportCommand } from "./commands/support";
+import { handleAccountView } from "./commands/account";
+import { handleSupportView } from "./commands/support";
 import { startServer } from "./server";
-import { startSalesReportScheduler } from './helpers/salesReportScheduler';
+import { sendToAdmin } from "./helpers/adminNotificationHelper";
+import { safeSendMessage } from "./utils/messages";
 
-// Load environment variables
 dotenv.config();
 
-const {BOT_TOKEN} = process.env;
-if (!BOT_TOKEN) {
-  throw new Error("BOT_TOKEN is not set in environment variables.");
-}
-
-const client = new MongoClient(process.env.MONGODB_URI || ""); // Fallback if MONGO_URI is not set
-const db = client.db("chamso");
-const usersCollection = db.collection("users");
-
-// Define session data interface
-interface SessionData {
-  awaitingPreOrderMessage?: boolean;
-  preOrderProductId?: string | null;
-  awaitingFullName?: boolean;
-  awaitingPhoneNumber?: boolean;
-}
-
-// Extend Context type to include session data
-type MyContext = Context & SessionFlavor<SessionData>;
-
-// Create the bot instance
-const bot = new Bot<MyContext>(BOT_TOKEN);
-
-// Initialize session middleware
 bot.use(
   session({
-    initial: (): SessionData => ({
+    initial: (): MyContext["session"] => ({
       awaitingPreOrderMessage: false,
       preOrderProductId: null,
       awaitingFullName: false,
@@ -61,29 +42,15 @@ bot.use(
   })
 );
 
-// Function to check if the user is accepted
 async function isUserAccepted(telegramId: number): Promise<boolean> {
   try {
-    const user = await usersCollection.findOne({
-      telegramId: telegramId.toString(), // Convert to string to match the model
+    const db = await connectToDB();
+    const user = await db.collection<User>("users").findOne({
+      telegramId: telegramId.toString(),
     });
 
-    // Check multiple conditions for user acceptance
-    if (!user) {
-      console.log(`No user found for telegramId: ${telegramId}`);
-      return false;
-    }
-
-    // Ensure all required fields are filled
-    if (!user.fullName || !user.phoneNumber) {
-      console.log(`User missing fullName or phoneNumber: ${telegramId}`);
-      return false;
-    }
-
-    // Explicitly log the isAccepted status
-    console.log(`isAccepted for ${telegramId}: ${user.isAccepted}`);
-
-    // Check isAccepted flag
+    if (!user) return false;
+    if (!user.fullName || !user.phoneNumber) return false;
     return user.isAccepted === true;
   } catch (error) {
     console.error("Error checking user acceptance:", error);
@@ -91,233 +58,265 @@ async function isUserAccepted(telegramId: number): Promise<boolean> {
   }
 }
 
-// Command Handlers with User Acceptance Check
 bot.command("start", async (ctx) => {
-  handleStartCommand(ctx); // Proceed with the command if accepted
+  await handleStartCommand(ctx);
 });
 
-bot.hears("تحديث", async (ctx) => {
+bot.command("menu", async (ctx) => {
   const telegramId = ctx.from?.id;
-
-  if (!telegramId) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
+  if (!telegramId) return;
+  const accepted = await isUserAccepted(telegramId);
+  if (!accepted) {
+    return ctx.reply("لم تتم الموافقة على استخدامك للبوت.");
   }
-
-  const isAccepted = await isUserAccepted(telegramId);
-  if (!isAccepted) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  handleStartCommand(ctx); // Proceed with the command if accepted
+  const db = await connectToDB();
+  const user = await db.collection<User>("users").findOne({
+    telegramId: telegramId.toString(),
+  });
+  await showMainMenu(ctx, user?.fullName || "مستخدم");
 });
 
-bot.hears("📊 عرض الرصيد", async (ctx) => {
-  const telegramId = ctx.from?.id;
-
-  if (!telegramId) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const isAccepted = await isUserAccepted(telegramId);
-  if (!isAccepted) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  handleBalanceCommand(ctx); // Proceed with the command if accepted
-});
-
-bot.hears("🛍️ عرض المنتجات", async (ctx) => {
-  const telegramId = ctx.from?.id;
-
-  if (!telegramId) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const isAccepted = await isUserAccepted(telegramId);
-  if (!isAccepted) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  handleProductsCommand(ctx); // Proceed with the command if accepted
-});
-
-bot.hears("📞 التواصل مع الدعم", async (ctx) => {
-  const telegramId = ctx.from?.id;
-
-  if (!telegramId) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const isAccepted = await isUserAccepted(telegramId);
-  if (!isAccepted) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  handleSupportCommand(ctx); // Proceed with the command if accepted
-});
-
-bot.hears("حسابي", async (ctx) => {
-  const telegramId = ctx.from?.id;
-
-  if (!telegramId) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const isAccepted = await isUserAccepted(telegramId);
-  if (!isAccepted) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  handleAccountCommand(ctx); // Proceed with the command if accepted
-});
-
-// Callback Query Handlers
-bot.callbackQuery(/^category_(.*)$/, async (ctx) => {
-  const telegramId = ctx.from?.id;
-  if (!telegramId) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const isAccepted = await isUserAccepted(telegramId);
-  if (!isAccepted) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const categoryId = ctx.match[1];
-  await handleCategorySelection(ctx, categoryId);
-  await ctx.answerCallbackQuery();
-});
-
-bot.callbackQuery(/^buy_(.*)$/, async (ctx) => {
-  const telegramId = ctx.from?.id;
-  if (!telegramId) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const isAccepted = await isUserAccepted(telegramId);
-  if (!isAccepted) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const productId = ctx.match[1];
-  await initiateBuyCommand(ctx, productId);
-  await ctx.answerCallbackQuery();
-});
-
-bot.callbackQuery(/^confirm_(.*)$/, async (ctx) => {
-  const telegramId = ctx.from?.id;
-  if (!telegramId) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const isAccepted = await isUserAccepted(telegramId);
-  if (!isAccepted) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const productId = ctx.match[1];
-  await handleBuyConfirmation(ctx, productId);
-  await ctx.answerCallbackQuery();
-});
-
-bot.callbackQuery(/^preorder_(.*)$/, async (ctx) => {
-  const telegramId = ctx.from?.id;
-  if (!telegramId) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const isAccepted = await isUserAccepted(telegramId);
-  if (!isAccepted) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  const productId = ctx.match[1];
-  await handlePreOrderConfirmation(ctx, productId);
-  await ctx.answerCallbackQuery();
-});
-
-bot.callbackQuery(/^cancel_(.*)$/, async (ctx) => {
-  const telegramId = ctx.from?.id;
-  if (!telegramId) {
-    return ctx.reply(
-      "⚠️ لم تتم الموافقة على استخدامك للبوت. الرجاء الانتظار للموافقة."
-    );
-  }
-
-  await handleCancelPurchase(ctx);
-  await ctx.answerCallbackQuery();
-});
-
-// Message Handlers for User Input
-bot.on("message:text", async (ctx) => {
-  try {
-    if (ctx.session.awaitingFullName) {
-      await handleFullNameInput(ctx);
-    } else if (ctx.session.awaitingPhoneNumber) {
-      await handlePhoneNumberInput(ctx);
-    } else if (ctx.session.awaitingPreOrderMessage) {
-      await handlePreOrderMessage(ctx);
-    }
-  } catch (error) {
-    console.error("Error in message handler:", error);
-    await ctx.reply("⚠️ حدث خطأ غير متوقع. الرجاء المحاولة مرة أخرى لاحقًا.");
-  }
-});
-
-// Global Error Handler
-bot.catch((error) => {
-  const {ctx} = error;
-  console.error("Error while handling update:", error.error);
-  ctx.reply(
-    "⚠️ حدث خطأ غير متوقع. الرجاء المحاولة مرة أخرى لاحقًا أو التواصل مع الدعم."
+bot.command("help", async (ctx) => {
+  await ctx.reply(
+    "*دليل استخدام البوت*\n\n" +
+    "/start - بدء استخدام البوت أو التسجيل\n" +
+    "/menu - القائمة الرئيسية\n" +
+    "/help - عرض هذه المساعدة\n\n" +
+    "يمكنك استخدام الأزرار للتنقل بين القوائم.",
+    { parse_mode: "Markdown" }
   );
 });
 
-// Start the server and bot
-startServer()
-  .then(() => {
-    bot.start();
-    startSalesReportScheduler(); // تشغيل جدولة تقارير المبيعات
-    console.log('🤖 تم تشغيل البوت بنجاح...');
-  })
-  .catch((err) => {
-    console.error('Failed to start server or bot:', err);
-  });
+bot.on("callback_query:data", async (ctx) => {
+  const data = ctx.callbackQuery.data;
+  if (!data) return;
 
-export { bot };
+  await ctx.answerCallbackQuery();
+
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+
+  if (data.startsWith("verify_user_")) {
+    const targetTelegramId = data.split("_")[2]; // verify_user_${telegramId}_${adminId}
+    const db = await connectToDB();
+    const result = await db.collection<User>("users").updateOne(
+      { telegramId: targetTelegramId },
+      { $set: { isAccepted: true } }
+    );
+    if (result.modifiedCount > 0) {
+      await ctx.editMessageText("تم قبول الحساب وتفعيله بنجاح.");
+      try {
+        await safeSendMessage(targetTelegramId, "تم قبول حسابك! يمكنك الآن استخدام البوت.", { reply_markup: getMainMenuKeyboard() });
+      } catch (err) {
+        console.error("Failed to notify user:", err);
+      }
+    } else {
+      await ctx.editMessageText("الحساب مقبول بالفعل أو غير موجود.");
+    }
+    return;
+  }
+
+  if (data.startsWith("preorder_confirm_")) {
+    await ctx.editMessageText("تم تأكيد استلام الطلب المسبق.");
+    return;
+  }
+
+  const parts = data.split(":");
+  const namespace = parts[0];
+  const action = parts[1];
+  const id = parts[2];
+
+  if (namespace === "menu" && action === "main") {
+    const db = await connectToDB();
+    const user = await db.collection<User>("users").findOne({
+      telegramId: telegramId.toString(),
+    });
+    if (!user?.isAccepted) {
+      return ctx.reply("لم تتم الموافقة على استخدامك للبوت.");
+    }
+    try { await ctx.deleteMessage(); } catch (e) {}
+    await showMainMenu(ctx, user?.fullName || "مستخدم");
+    return;
+  }
+
+  const accepted = await isUserAccepted(telegramId);
+  if (!accepted) {
+    return ctx.reply("لم تتم الموافقة على استخدامك للبوت.");
+  }
+
+  switch (namespace) {
+    case "menu":
+      if (action === "balance") {
+        await handleBalanceView(ctx);
+      } else if (action === "products") {
+        await handleProductsCommand(ctx);
+      }
+      break;
+
+    case "category":
+      await handleCategorySelection(ctx, action);
+      break;
+
+    case "product":
+      await initiateBuyCommand(ctx, action);
+      break;
+
+    case "buy":
+      if (action === "initiate" && id) {
+        await initiateBuyCommand(ctx, id);
+      } else if (action === "confirm" && id) {
+        await handleBuyConfirmation(ctx, id);
+      } else if (action === "cancel" && id) {
+        await handleCancelPurchase(ctx, id);
+      }
+      break;
+
+    case "preorder":
+      if (action) {
+        await handlePreOrderConfirmation(ctx, action);
+      }
+      break;
+
+    case "account":
+      if (action === "view") {
+        await handleAccountView(ctx);
+      }
+      break;
+
+    case "support":
+      if (action === "view") {
+        await handleSupportView(ctx);
+      }
+      break;
+
+    default:
+      break;
+  }
+});
+
+bot.hears("الرصيد", async (ctx) => {
+  if (!ctx.from?.id) return;
+  const accepted = await isUserAccepted(ctx.from.id);
+  if (!accepted) return ctx.reply("لم تتم الموافقة على استخدامك للبوت.");
+  await handleBalanceView(ctx);
+});
+
+bot.hears("المنتجات", async (ctx) => {
+  if (!ctx.from?.id) return;
+  const accepted = await isUserAccepted(ctx.from.id);
+  if (!accepted) return ctx.reply("لم تتم الموافقة على استخدامك للبوت.");
+  await handleProductsCommand(ctx);
+});
+
+bot.hears("حسابي", async (ctx) => {
+  if (!ctx.from?.id) return;
+  const accepted = await isUserAccepted(ctx.from.id);
+  if (!accepted) return ctx.reply("لم تتم الموافقة على استخدامك للبوت.");
+  await handleAccountView(ctx);
+});
+
+bot.hears("الدعم الفني", async (ctx) => {
+  if (!ctx.from?.id) return;
+  const accepted = await isUserAccepted(ctx.from.id);
+  if (!accepted) return ctx.reply("لم تتم الموافقة على استخدامك للبوت.");
+  await handleSupportView(ctx);
+});
+
+bot.on("message", async (ctx, next) => {
+  try {
+    const text = ctx.message?.text;
+    
+    if (ctx.session.awaitingFullName && text) {
+      await handleFullNameInput(ctx);
+      return;
+    } 
+    if (ctx.session.awaitingPhoneNumber && (text || ctx.message?.contact)) {
+      await handlePhoneNumberInput(ctx);
+      return;
+    } 
+    if (ctx.session.awaitingPreOrderMessage && text) {
+      await handlePreOrderMessage(ctx);
+      return;
+    }
+    
+    if (text) {
+      if (text === "تأكيد الشراء" && ctx.session.awaitingBuyConfirmationProductId) {
+         const productId = ctx.session.awaitingBuyConfirmationProductId;
+         await handleBuyConfirmation(ctx, productId);
+         return;
+      }
+      if (text === "إلغاء الشراء" && ctx.session.awaitingBuyConfirmationProductId) {
+         const productId = ctx.session.awaitingBuyConfirmationProductId;
+         await handleCancelPurchase(ctx, productId);
+         return;
+      }
+      if (text === "إلغاء الشراء" && ctx.session.awaitingPreOrderMessage) {
+         const productId = ctx.session.preOrderProductId!;
+         await handleCancelPurchase(ctx, productId);
+         return;
+      }
+      if (text === "طلب مسبق للمنتج" && ctx.session.awaitingBuyConfirmationProductId) {
+         const productId = ctx.session.awaitingBuyConfirmationProductId;
+         await handlePreOrderConfirmation(ctx, productId);
+         return;
+      }
+
+      if (text === "رجوع للقائمة الرئيسية") {
+        const db = await connectToDB();
+        const user = await db.collection<User>("users").findOne({ telegramId: ctx.from?.id.toString() });
+        await showMainMenu(ctx, user?.fullName || "مستخدم");
+        return;
+      }
+
+      const db = await connectToDB();
+      const category = await db.collection("categories").findOne({ name: text });
+      if (category) {
+        if (!ctx.from?.id) return;
+        const accepted = await isUserAccepted(ctx.from.id);
+        if (!accepted) {
+           await ctx.reply("لم تتم الموافقة على استخدامك للبوت.");
+           return;
+        }
+        await handleCategorySelection(ctx, category._id.toString());
+        return;
+      }
+    }
+
+    await next();
+  } catch (error) {
+    console.error("Error in message handler:", error);
+    await ctx.reply("حدث خطأ غير متوقع. الرجاء المحاولة مرة أخرى لاحقًا.");
+  }
+});
+
+bot.catch(async (error) => {
+  const { ctx } = error;
+  console.error("Error while handling update:", error.error);
+  try {
+    await ctx.reply(
+      "حدث خطأ غير متوقع. الرجاء المحاولة مرة أخرى لاحقًا أو التواصل مع الدعم."
+    );
+  } catch {}
+  try {
+    await sendToAdmin(
+      `Bot error in chat ${ctx.chat?.id}:\n${error.error}`
+    );
+  } catch {}
+});
+
+async function bootstrap() {
+  await startServer();
+
+  await bot.api.setMyCommands([
+    { command: "start", description: "بدء استخدام البوت" },
+    { command: "menu", description: "القائمة الرئيسية" },
+    { command: "help", description: "مساعدة" },
+  ]);
+
+  bot.start();
+  console.log("تم تشغيل البوت بنجاح...");
+}
+
+bootstrap().catch((err) => {
+  console.error("Failed to start server or bot:", err);
+});

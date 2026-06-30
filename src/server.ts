@@ -1,4 +1,4 @@
-import express, { Request, Response } from "express";
+import express, { Request, Response, NextFunction } from "express";
 import dotenv from "dotenv";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -7,7 +7,7 @@ import productRoutes from "./routes/productRoutes";
 import categoryRoutes from "./routes/categoryRoutes";
 import notificationRoutes from "./routes/notificationRoutes";
 import preOrderRoutes from "./routes/preOrderRoutes";
-import historicRoutes from "./routes/history"; // Import historic routes
+import historicRoutes from "./routes/history";
 import { asyncHandler } from "./utils/asyncHandler";
 
 dotenv.config();
@@ -15,38 +15,27 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
 app.use(cors());
-
-// Increase JSON and URL-encoded payload size limits (e.g., 10MB)
 app.use(bodyParser.json({ limit: "10mb" }));
 app.use(bodyParser.urlencoded({ limit: "10mb", extended: true }));
 
-// Basic route for server check
 app.get(
   "/",
   asyncHandler((req: Request, res: Response) => res.send("I'm alive"))
 );
 
-// User routes
 app.use("/users", userRoutes);
-
-// Category routes
 app.use("/categories", categoryRoutes);
-
-// Product routes
 app.use("/products", productRoutes);
-
-// Notification routes
 app.use("/notifications", notificationRoutes);
-
-// PreOrders routes
 app.use("/preorders", preOrderRoutes);
-
-// Historic routes
 app.use("/historic", historicRoutes);
 
-// Start server function
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("Unhandled Express error:", err);
+  res.status(500).json({ error: "Internal server error" });
+});
+
 export const startServer = () => {
   return new Promise<void>((resolve, reject) => {
     app

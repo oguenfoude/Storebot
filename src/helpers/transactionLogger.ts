@@ -1,13 +1,11 @@
-// src/helpers/transactionLogger.ts
 import { User, UserEvent } from "../models/user";
 import { Context } from "grammy";
 
 export const logTransaction = (user: User, entry: UserEvent) => {
   user.history = user.history || [];
-  user.history.push(entry); // Add the new entry to the user's history
+  user.history.push(entry);
 };
 
-// Send a message to the client about their new balance
 export const sendBalanceUpdateMessage = async (
   ctx: Context,
   user: User,
@@ -19,7 +17,6 @@ export const sendBalanceUpdateMessage = async (
   );
 };
 
-// Handle a purchase and update user’s history
 export const handlePurchase = async (
   ctx: Context,
   user: User,
@@ -27,7 +24,7 @@ export const handlePurchase = async (
   productPrice: number
 ) => {
   const oldBalance = user.balance;
-  user.balance -= productPrice; // Deduct purchase amount
+  user.balance -= productPrice;
 
   logTransaction(user, {
     date: new Date(),

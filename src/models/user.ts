@@ -1,4 +1,3 @@
-// src/models/user.ts
 import { ObjectId } from "mongodb";
 
 export interface User {
@@ -7,31 +6,29 @@ export interface User {
   chatId: string;
   username: string;
   name: string;
-  fullName?: string; // User's full name
-  phoneNumber?: string; // User's phone number
+  fullName?: string;
+  phoneNumber?: string;
   balance: number;
-  registerDate: Date; // Date of user registration
-  isAccepted: boolean; // Controls bot access
-  history?: UserEvent[]; // Combined history of user events
-  paymentHistory?: PaymentHistoryEntry[]; // Payment history
+  registerDate: Date;
+  isAccepted: boolean;
+  history?: UserEvent[];
+  paymentHistory?: PaymentHistoryEntry[];
 }
 
-// Unified User Event Interface
 export interface UserEvent {
-  type: "recharge" | "status" | "delete" | "purchase"; // Added "purchase" type
+  type: "recharge" | "status" | "delete" | "purchase";
   date: Date;
-  amount?: number; // Optional for recharge
-  status?: string; // Optional for status
-  productId?: ObjectId; // Optional for purchase
-  productName?: string; // Optional for purchase
-  price?: number; // Price of the purchased product
-  emailSold?: string; // New field for storing sold email
-  categoryName?: string; // Add this field
-  adminAction?: "Recharge" | "Discount"; // New field for specifying admin action type
-  transactionId?: ObjectId; // New field for transaction ID
+  amount?: number;
+  status?: string;
+  productId?: ObjectId;
+  productName?: string;
+  price?: number;
+  emailSold?: string;
+  categoryName?: string;
+  adminAction?: "Recharge" | "Discount";
+  transactionId?: ObjectId;
 }
 
-// Payment History Entry Interface
 export interface PaymentHistoryEntry {
   date: Date;
   amount: number;

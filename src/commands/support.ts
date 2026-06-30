@@ -1,24 +1,26 @@
-import { Context, InlineKeyboard } from "grammy";
+import { InlineKeyboard } from "grammy";
+import { MyContext } from "../types";
 
-export const handleSupportCommand = (ctx: Context) => {
+const WHATSAPP_URL = process.env.SUPPORT_WHATSAPP_URL || "https://wa.me/213776863561";
+const TELEGRAM_URL = process.env.SUPPORT_TELEGRAM_URL || "https://t.me/Jeogooussama";
+
+export const handleSupportView = async (ctx: MyContext) => {
   try {
-    // Create an inline keyboard with WhatsApp and Telegram links
     const keyboard = new InlineKeyboard()
-      .url("تواصل عبر WhatsApp", "https://wa.me/213557349101")
-      .row() // Add a new row for better organization
-      .url("تواصل عبر Telegram", "https://t.me/Shams0628");
+      .url("تواصل عبر WhatsApp", WHATSAPP_URL)
+      .url("تواصل عبر Telegram", TELEGRAM_URL)
+      .row()
+      .text("رجوع", "menu:main");
 
-    // Send the reply with the keyboard
-    ctx.reply(
-      "الدعم الفني لشحن الرصيد الرجاء التواصل معنا عبر الروابط التالية:",
-      {
-        reply_markup: keyboard,
-      }
-    );
+    const message = "الدعم الفني لشحن الرصيد الرجاء التواصل معنا عبر الروابط التالية:";
+
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(message, { reply_markup: keyboard });
+    } else {
+      await ctx.reply(message, { reply_markup: keyboard });
+    }
   } catch (error) {
-    console.error("Error in handleSupportCommand:", error);
-    ctx.reply(
-      "حدث خطأ أثناء تحميل معلومات الدعم. الرجاء المحاولة مرة أخرى لاحقًا."
-    );
+    console.error("Error in handleSupportView:", error);
+    await ctx.reply("حدث خطأ أثناء تحميل معلومات الدعم. الرجاء المحاولة مرة أخرى لاحقًا.");
   }
 };

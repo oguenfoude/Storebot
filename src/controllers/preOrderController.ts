@@ -1,13 +1,13 @@
 import { Request, Response } from "express";
 import { ObjectId } from "mongodb";
 import { connectToDB } from "../db";
-import { History } from "../models/history"; // Import your history model
+import { History } from "../models/history";
 import { Product } from "../models/product";
 import { User } from "../models/user";
 import { PreOrder } from "../models/preorder";
-import { bot } from "../bot";
+import { bot } from "../botInstance";
+import { safeSendMessage } from "../utils/messages";
 
-// Helper function to log history
 const logHistory = async (type: "client" | "admin", entry: any) => {
   const db = await connectToDB();
 
@@ -20,19 +20,16 @@ const logHistory = async (type: "client" | "admin", entry: any) => {
   await db.collection<History>("history").insertOne(historyEntry);
 };
 
-// Update a pre-order's status
 export const updatePreOrderStatus = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
     const preOrderId = new ObjectId(req.params.id);
     const { status, emailPassword } = req.body;
 
-    // Validate status
     if (!["fulfilled", "canceled"].includes(status)) {
       return res.status(400).json({ error: "Invalid status value" });
     }
 
-    // Fetch the pre-order
     const preOrder = await db
       .collection<PreOrder>("preorders")
       .findOne({ _id: preOrderId });
@@ -40,7 +37,6 @@ export const updatePreOrderStatus = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Pre-order not found" });
     }
 
-    // Fetch the user
     const user = await db
       .collection<User>("users")
       .findOne({ _id: preOrder.userId });
@@ -48,7 +44,6 @@ export const updatePreOrderStatus = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // Fetch the product
     const product = await db
       .collection<Product>("products")
       .findOne({ _id: preOrder.productId });
@@ -63,7 +58,6 @@ export const updatePreOrderStatus = async (req: Request, res: Response) => {
           .json({ error: "Email and password are required for fulfillment." });
       }
 
-      // Update the pre-order with fulfillment details
       await db.collection<PreOrder>("preorders").updateOne(
         { _id: preOrderId },
         {
@@ -75,15 +69,13 @@ export const updatePreOrderStatus = async (req: Request, res: Response) => {
         }
       );
 
-      // Notify the user about the fulfillment
       const message =
-        `✅ طلبك للمنتج "${product.name}" قد تم تحقيقه بنجاح!\n\n` +
-        `📧 معلومات الطلب: ${emailPassword}\n` +
-        `💬 شكراً لتعاملك معنا!`;
+        `طلبك للمنتج "${product.name}" قد تم تحقيقه بنجاح!\n\n` +
+        `معلومات الطلب: ${emailPassword}\n` +
+        `شكراً لتعاملك معنا!`;
 
-      await bot.api.sendMessage(user.telegramId, message);
+      await safeSendMessage(user.telegramId, message);
 
-      // Log fulfillment in history
       const fulfillmentHistoryEntry = {
         action: "preorder",
         date: new Date(),
@@ -101,13 +93,11 @@ export const updatePreOrderStatus = async (req: Request, res: Response) => {
 
       await logHistory("client", fulfillmentHistoryEntry);
     } else if (status === "canceled") {
-      // Refund the user's balance
       const refundAmount = product.price;
       await db
         .collection<User>("users")
         .updateOne({ _id: user._id }, { $inc: { balance: refundAmount } });
 
-      // Update the pre-order status to canceled
       await db
         .collection<PreOrder>("preorders")
         .updateOne(
@@ -115,15 +105,13 @@ export const updatePreOrderStatus = async (req: Request, res: Response) => {
           { $set: { status, clientMessageData: "" } }
         );
 
-      // Notify the user about the cancellation
       const message =
-        `❌ طلبك للمنتج "${product.name}" تم إلغاؤه.\n` +
-        `💰 تم إعادة المبلغ إلى حسابك (${refundAmount}).\n` +
-        `💬 نعتذر عن الإزعاج.`;
+        `طلبك للمنتج "${product.name}" تم إلغاؤه.\n` +
+        `تم إعادة المبلغ إلى حسابك (${refundAmount}).\n` +
+        `نعتذر عن الإزعاج.`;
 
-      await bot.api.sendMessage(user.telegramId, message);
+      await safeSendMessage(user.telegramId, message);
 
-      // Log cancellation in history
       const cancellationHistoryEntry = {
         action: "preorder",
         date: new Date(),
@@ -148,7 +136,6 @@ export const updatePreOrderStatus = async (req: Request, res: Response) => {
   }
 };
 
-// Get all pre-orders for a product
 export const getPreOrders = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -174,7 +161,6 @@ export const getPreOrders = async (req: Request, res: Response) => {
   }
 };
 
-// Delete a pre-order
 export const deletePreOrderById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -207,7 +193,6 @@ export const deletePreOrderById = async (req: Request, res: Response) => {
   }
 };
 
-// Fetch all pre-orders
 export const getAllPreOrders = async (_req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -258,7 +243,6 @@ export const getAllPreOrders = async (_req: Request, res: Response) => {
   }
 };
 
-// Fetch a single pre-order by ID
 export const getPreOrderById = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
@@ -286,13 +270,13 @@ export const getPreOrderById = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Error fetching pre-order by ID" });
   }
 };
+
 export const fulfillPreOrder = async (req: Request, res: Response) => {
   try {
     const db = await connectToDB();
     const preOrderId = req.params.id;
     const { emailPassword } = req.body;
 
-    // Validate input
     if (!preOrderId) {
       return res.status(400).json({ error: "Pre-order ID is required" });
     }
@@ -307,7 +291,6 @@ export const fulfillPreOrder = async (req: Request, res: Response) => {
 
     const preOrderObjectId = new ObjectId(preOrderId);
 
-    // Fetch the pre-order
     const preOrder = await db
       .collection<PreOrder>("preorders")
       .findOne({ _id: preOrderObjectId });
@@ -315,7 +298,6 @@ export const fulfillPreOrder = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Pre-order not found" });
     }
 
-    // Fetch the user
     const user = await db
       .collection<User>("users")
       .findOne({ _id: preOrder.userId });
@@ -323,7 +305,6 @@ export const fulfillPreOrder = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // Fetch the product
     const product = await db
       .collection<Product>("products")
       .findOne({ _id: preOrder.productId });
@@ -331,7 +312,6 @@ export const fulfillPreOrder = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Product not found" });
     }
 
-    // Update the pre-order with fulfillment details
     const fulfillmentDate = new Date();
     await db.collection<PreOrder>("preorders").updateOne(
       { _id: preOrderObjectId },
@@ -344,15 +324,13 @@ export const fulfillPreOrder = async (req: Request, res: Response) => {
       }
     );
 
-    // Notify the user via Telegram bot
     const message =
-      `✅ طلبك للمنتج "${product.name}" قد تم تحقيقه بنجاح!\n\n` +
-      `📧 معلومات الطلب: ${emailPassword}\n` +
-      `💬 شكراً لتعاملك معنا!`;
+      `طلبك للمنتج "${product.name}" قد تم تحقيقه بنجاح!\n\n` +
+      `معلومات الطلب: ${emailPassword}\n` +
+      `شكراً لتعاملك معنا!`;
 
-    await bot.api.sendMessage(user.telegramId, message);
+    await safeSendMessage(user.telegramId, message);
 
-    // Log the fulfillment in history
     const fulfillmentHistoryEntry = {
       action: "preorder",
       date: fulfillmentDate,
