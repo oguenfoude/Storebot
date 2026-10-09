@@ -1,43 +1,38 @@
 import { connectToDB } from "../db";
 import { User } from "../models/user";
-import { InlineKeyboard } from "grammy";
 import { MyContext } from "../types";
+import { ObjectId } from "mongodb";
+import { t } from "../languages";
+import logger from "../helpers/logger";
 
-export const handleAccountView = async (ctx: MyContext) => {
+const log = logger.child({ tag: "AccountCmd" });
+
+export const handleAccountView = async (ctx: MyContext, sellerId?: ObjectId) => {
   try {
     const telegramId = ctx.from?.id.toString();
     if (!telegramId) {
-      return ctx.reply("حدث خطأ أثناء التحقق من المستخدم.");
+      return ctx.reply(t().account.errorChecking);
     }
+    const sid = sellerId || (await import("../config/seller")).DEFAULT_SELLER_ID;
 
     const db = await connectToDB();
-    const user = await db.collection<User>("users").findOne({ telegramId });
+    const user = await db.collection<User>("users").findOne({ telegramId, sellerId: sid });
 
     if (!user) {
-      return ctx.reply("المستخدم غير موجود.");
+      return ctx.reply(t().general.userNotFound);
     }
 
-    const keyboard = new InlineKeyboard().text("رجوع", "menu:main");
+    const dict = t(user.language);
     const message =
-      `تفاصيل الحساب\n\n` +
-      `الاسم الكامل: ${user.fullName || "غير متوفر"}\n` +
-      `معرف الحساب: ${user.telegramId}\n` +
-      `الرصيد الحالي: ${user.balance || 0} نقطة\n\n` +
-      `شكرًا لاستخدامك خدماتنا!`;
+      `${dict.account.title}\n\n` +
+      `${dict.account.fullName.replace("${name}", user.fullName || "N/A")}\n` +
+      `${dict.account.accountId.replace("${id}", user.telegramId)}\n` +
+      `${dict.account.currentBalance.replace("${balance}", (user.balance || 0).toString())}\n\n` +
+      `${dict.account.thankYou}`;
 
-    if (ctx.callbackQuery) {
-      await ctx.editMessageText(message, {
-        parse_mode: "Markdown",
-        reply_markup: keyboard,
-      });
-    } else {
-      await ctx.reply(message, {
-        parse_mode: "Markdown",
-        reply_markup: keyboard,
-      });
-    }
+    await ctx.reply(message);
   } catch (error) {
-    console.error("Error handling account command:", error);
-    await ctx.reply("حدث خطأ أثناء جلب تفاصيل الحساب.");
+    log.error({ err: error }, "Error handling account command");
+    await ctx.reply(t().account.errorLoading);
   }
 };

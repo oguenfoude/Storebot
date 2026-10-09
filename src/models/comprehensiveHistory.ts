@@ -2,6 +2,7 @@ import { ObjectId } from "mongodb";
 
 export interface ComprehensiveHistory {
   _id: ObjectId;
+  sellerId?: ObjectId;
   userId: ObjectId;
   actionType: string;
   date: Date;

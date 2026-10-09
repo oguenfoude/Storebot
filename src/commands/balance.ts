@@ -1,42 +1,33 @@
 import { connectToDB } from "../db";
 import { User } from "../models/user";
-import { InlineKeyboard } from "grammy";
 import { MyContext } from "../types";
+import { ObjectId } from "mongodb";
+import { t } from "../languages";
+import logger from "../helpers/logger";
 
-export const handleBalanceView = async (ctx: MyContext): Promise<void> => {
+const log = logger.child({ tag: "BalanceCmd" });
+
+export const handleBalanceView = async (ctx: MyContext, sellerId?: ObjectId): Promise<void> => {
   try {
     const telegramId = ctx.from?.id.toString();
     if (!telegramId) return;
+    const sid = sellerId || (await import("../config/seller")).DEFAULT_SELLER_ID;
+    log.info({ telegramId: ctx.from?.id, sellerId: sid.toString() }, "Balance viewed");
 
     const db = await connectToDB();
-    const user = await db.collection<User>("users").findOne({ telegramId });
+    const user = await db.collection<User>("users").findOne({ telegramId, sellerId: sid });
 
     if (!user) {
-      if (ctx.callbackQuery) {
-        await ctx.editMessageText("لم يتم العثور على المستخدم. يُرجى التسجيل أولاً.");
-      } else {
-        await ctx.reply("لم يتم العثور على المستخدم. يُرجى التسجيل أولاً.");
-      }
+      await ctx.reply(t().general.userNotFound);
       return;
     }
 
+    const dict = t(user.language);
     const balance = user.balance || 0;
-    const keyboard = new InlineKeyboard().text("رجوع", "menu:main");
-    const messageText = `رصيدك الحالي\n\nالمبلغ المتاح: ${balance} نقطة`;
-
-    if (ctx.callbackQuery) {
-      await ctx.editMessageText(messageText, {
-        parse_mode: "Markdown",
-        reply_markup: keyboard,
-      });
-    } else {
-      await ctx.reply(messageText, {
-        parse_mode: "Markdown",
-        reply_markup: keyboard,
-      });
-    }
+    const messageText = `${dict.balance.title}\n\n${dict.balance.amount.replace("${balance}", balance.toString())}`;
+    await ctx.reply(messageText);
   } catch (error) {
-    console.error("Error in handleBalanceView:", error);
-    await ctx.reply("حدث خطأ أثناء التحقق من رصيدك. الرجاء المحاولة مرة أخرى لاحقًا.");
+    log.error({ err: error }, "Error in handleBalanceView");
+    await ctx.reply(t().balance.errorLoading);
   }
 };

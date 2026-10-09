@@ -1,51 +1,121 @@
-import express, { Request, Response, NextFunction } from "express";
+import express from "express";
 import dotenv from "dotenv";
-import bodyParser from "body-parser";
-import cors from "cors";
-import userRoutes from "./routes/userRoutes";
-import productRoutes from "./routes/productRoutes";
-import categoryRoutes from "./routes/categoryRoutes";
-import notificationRoutes from "./routes/notificationRoutes";
-import preOrderRoutes from "./routes/preOrderRoutes";
-import historicRoutes from "./routes/history";
-import { asyncHandler } from "./utils/asyncHandler";
+import type { Server } from "http";
+import { randomUUID } from "crypto";
+import { verifyIPNSignature, handleIPNCallback } from "./services/nowpayments";
+import logger from "./helpers/logger";
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+let httpServer: Server | null = null;
 
-app.use(cors());
-app.use(bodyParser.json({ limit: "10mb" }));
-app.use(bodyParser.urlencoded({ limit: "10mb", extended: true }));
+export function startWebhookServer(): void {
+  const port = parseInt(process.env.WEBHOOK_PORT || "3000", 10);
+  const app = express();
 
-app.get(
-  "/",
-  asyncHandler((req: Request, res: Response) => res.send("I'm alive"))
-);
+  // Parse raw body for signature verification
+  app.use("/api/webhook/nowpayments", express.raw({ type: "application/json" }));
+  app.use(express.json());
 
-app.use("/users", userRoutes);
-app.use("/categories", categoryRoutes);
-app.use("/products", productRoutes);
-app.use("/notifications", notificationRoutes);
-app.use("/preorders", preOrderRoutes);
-app.use("/historic", historicRoutes);
+  // Health check
+  app.get("/health", async (_req, res) => {
+    const checks: Record<string, { ok: boolean; detail?: string }> = {};
 
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  console.error("Unhandled Express error:", err);
-  res.status(500).json({ error: "Internal server error" });
-});
+    // MongoDB
+    try {
+      const dbModule = await import("./db");
+      const db = await dbModule.connectToDB();
+      await db.command({ ping: 1 });
+      checks.mongodb = { ok: true };
+    } catch (e) {
+      checks.mongodb = { ok: false, detail: String((e as Error).message) };
+    }
 
-export const startServer = () => {
-  return new Promise<void>((resolve, reject) => {
-    app
-      .listen(PORT, () => {
-        console.log(`Server running on http://localhost:${PORT}`);
-        resolve();
-      })
-      .on("error", (err) => {
-        console.error("Failed to start server:", err);
-        reject(err);
-      });
+    // BotManager
+    try {
+      const botManagerModule = await import("./bot/manager");
+      checks.botManager = { ok: true, detail: `runningCount=${botManagerModule.BotManager.runningCount}` };
+    } catch (e) {
+      checks.botManager = { ok: false, detail: String((e as Error).message) };
+    }
+
+    // IPN secret
+    checks.ipnSecret = {
+      ok: !!process.env.NOWPAYMENTS_IPN_SECRET,
+      detail: process.env.NOWPAYMENTS_IPN_SECRET ? "configured" : "missing — webhook rejects all IPNs with 501",
+    };
+
+    const allOk = Object.values(checks).every((c) => c.ok);
+    res.status(allOk ? 200 : 503).json({
+      status: allOk ? "ok" : "degraded",
+      timestamp: new Date().toISOString(),
+      version: process.env.npm_package_version || "unknown",
+      checks,
+    });
   });
-};
+
+  // NOWPayments IPN webhook
+  app.post("/api/webhook/nowpayments", async (req, res) => {
+    const requestId = randomUUID();
+    const childLogger = logger.child({ tag: "Webhook", requestId });
+
+    try {
+      const rawBody = req.body.toString("utf8");
+      const signature = req.headers["x-nowpayments-sig"] as string;
+
+      childLogger.info({ invoiceId: "(parsing)" }, "IPN webhook received");
+
+      const ipnSecret = process.env.NOWPAYMENTS_IPN_SECRET;
+      if (!ipnSecret) {
+        childLogger.warn("IPN secret not configured — rejecting with 501");
+        res.status(501).json({ error: "IPN not configured" });
+        return;
+      }
+
+      if (!signature) {
+        childLogger.warn("Missing IPN signature — rejecting with 401");
+        res.status(401).json({ error: "Missing signature" });
+        return;
+      }
+
+      if (!verifyIPNSignature(rawBody, signature)) {
+        childLogger.warn("Invalid IPN signature — rejecting with 401");
+        res.status(401).json({ error: "Invalid signature" });
+        return;
+      }
+
+      const paymentData = JSON.parse(rawBody);
+
+      res.status(200).json({ status: "ok" });
+      childLogger.info(
+        { paymentId: paymentData.id, status: paymentData.status },
+        "IPN accepted — processing in background"
+      );
+      await handleIPNCallback(paymentData);
+    } catch (error) {
+      childLogger.error({ err: error }, "Error processing IPN");
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Internal error" });
+      }
+    }
+  });
+
+  // 404 handler
+  app.use((_req, res) => {
+    res.status(404).json({ error: "Not found" });
+  });
+
+  httpServer = app.listen(port, () => {
+    logger.info({ tag: "Webhook", port }, `Webhook server listening on port ${port}`);
+  });
+}
+
+export async function stopWebhookServer(): Promise<void> {
+  if (!httpServer) return;
+  await new Promise<void>((resolve) => {
+    (httpServer as any).closeAllConnections?.();
+    httpServer!.close(() => resolve());
+  });
+  httpServer = null;
+  logger.info({ tag: "Webhook" }, "Webhook server closed");
+}

@@ -1,39 +1,51 @@
 import { ObjectId } from "mongodb";
-import { bot } from "../botInstance";
 import { connectToDB } from "../db";
 import { PreOrder } from "../models/preorder";
 import { ComprehensiveHistory } from "../models/comprehensiveHistory";
 import { User } from "../models/user";
 import { Product } from "../models/product";
-import { AdminMessages, UserMessages, ErrorMessages, safeSendMessage } from "../utils/messages";
-
+import { BotManager } from "../bot/manager";
 import { sendToAdmin } from '../helpers/adminNotificationHelper';
+import { t } from "../languages";
+import logger from "../helpers/logger";
+
+const log = logger.child({ tag: "PreOrderCmd" });
 
 export const createPreOrderInDB = async (
   userId: ObjectId,
   productId: ObjectId,
-  message: string
+  message: string,
+  sellerId?: ObjectId
 ): Promise<PreOrder | null> => {
+  const sid = sellerId || (await import("../config/seller")).DEFAULT_SELLER_ID;
   const db = await connectToDB();
 
-  const user = await db.collection<User>("users").findOne({ _id: userId });
   const product = await db
     .collection<Product>("products")
-    .findOne({ _id: productId });
+    .findOne({ _id: productId, sellerId: sid });
 
-  if (!user) throw new Error(ErrorMessages.userNotFound());
-  if (!product) throw new Error(ErrorMessages.productNotFound());
+  if (!product) throw new Error(t().general.productNotFound);
 
-  if (user.balance < product.price) {
+  // Atomic balance deduction: only deduct if balance >= price
+  const userBefore = await db.collection<User>("users").findOne({ _id: userId, sellerId: sid });
+  if (!userBefore) throw new Error(t().general.userNotFound);
+  if (userBefore.balance < product.price) {
     throw new Error(
-      UserMessages.formatInsufficientFundsMessage(user.balance, product.price)
+      t().messages.insufficientFunds.replace("${needed}", (product.price - userBefore.balance).toString())
     );
   }
 
-  const newBalance = user.balance - product.price;
-  await db
+  const result = await db
     .collection<User>("users")
-    .updateOne({ _id: userId }, { $set: { balance: newBalance } });
+    .findOneAndUpdate(
+      { _id: userId, sellerId: sid, balance: { $gte: product.price } },
+      { $inc: { balance: -product.price } },
+      { returnDocument: "after" }
+    );
+
+  if (!result) {
+    throw new Error(t().messages.insufficientFunds.replace("${needed}", "0"));
+  }
 
   const newPreOrder: PreOrder = {
     _id: new ObjectId(),
@@ -42,33 +54,43 @@ export const createPreOrderInDB = async (
     date: new Date(),
     status: "pending",
     message,
-    userName: user.username,
-    fullName: user.fullName || "غير متوفر",
-    userTelegramId: user.telegramId,
+    userName: userBefore.username,
+    fullName: userBefore.fullName || "N/A",
+    userTelegramId: userBefore.telegramId,
     productName: product.name,
     productPrice: product.price,
+    sellerId: sid,
   };
 
-  await db.collection<PreOrder>("preorders").insertOne(newPreOrder);
+  try {
+    await db.collection<PreOrder>("preorders").insertOne(newPreOrder);
+  } catch (insertError) {
+    // Refund balance if insert fails
+    await db
+      .collection<User>("users")
+      .updateOne({ _id: userId, sellerId: sid }, { $inc: { balance: product.price } });
+    throw insertError;
+  }
 
-  await logPreOrderHistory(newPreOrder, message);
+  await logPreOrderHistory(newPreOrder, message, sid);
 
   return newPreOrder;
 };
 
-const logPreOrderHistory = async (preOrder: PreOrder, userMessage: string) => {
+const logPreOrderHistory = async (preOrder: PreOrder, userMessage: string, sellerId: ObjectId) => {
   const db = await connectToDB();
 
   const product = await db
     .collection<Product>("products")
-    .findOne({ _id: new ObjectId(preOrder.productId) });
+    .findOne({ _id: new ObjectId(preOrder.productId), sellerId });
 
-  let categoryName = "غير محدد";
+  let categoryName = "N/A";
   if (product?.categoryId) {
     const category = await db.collection("categories").findOne({
       _id: new ObjectId(product.categoryId),
+      sellerId,
     });
-    categoryName = category?.name || "غير محدد";
+    categoryName = category?.name || "N/A";
   }
 
   const historyEntry: ComprehensiveHistory = {
@@ -76,12 +98,13 @@ const logPreOrderHistory = async (preOrder: PreOrder, userMessage: string) => {
     userId: preOrder.userId,
     actionType: "preOrder",
     date: new Date(),
-    description: `طلب مسبق للمنتج '${preOrder.productName}' من المستخدم '${preOrder.userName}' مع الرسالة: ${userMessage}`,
+    description: `Pre-order for '${preOrder.productName}' from '${preOrder.userName}' with message: ${userMessage}`,
     productId: preOrder.productId,
     productName: preOrder.productName,
     price: preOrder.productPrice,
     categoryName,
     userMessage,
+    sellerId,
   };
 
   await db.collection<ComprehensiveHistory>("history").insertOne(historyEntry);
@@ -89,27 +112,25 @@ const logPreOrderHistory = async (preOrder: PreOrder, userMessage: string) => {
 
 export const notifyUserAboutPreOrder = async (preOrder: PreOrder) => {
   try {
-    const userMessage = UserMessages.preorderSuccess(preOrder.productName);
-    await safeSendMessage(preOrder.userTelegramId, userMessage);
+    const userMessage = t().preorder.userSuccess.replace("${name}", preOrder.productName);
+    const bot = BotManager.getBotForMessage(preOrder.sellerId!);
+    await bot.api.sendMessage(preOrder.userTelegramId, userMessage);
   } catch (error) {
-    console.error("Error sending pre-order confirmation to user:", error);
+    log.error({ err: error }, "Error sending pre-order confirmation to user");
   }
 };
 
-export const notifyAdminAboutPreOrder = async (preOrder: PreOrder) => {
+export const notifyAdminAboutPreOrder = async (preOrder: PreOrder, sellerId?: ObjectId) => {
   try {
-    const adminMessage = AdminMessages.notifyAdminPreOrder(
-      preOrder.fullName,
-      preOrder.userName,
-      preOrder.productName,
-      preOrder.message
-    );
+    const sid = sellerId || preOrder.sellerId;
+    const adminMessage = t().preorder.adminNotification
+      .replace("${name}", preOrder.fullName)
+      .replace("${username}", preOrder.userName)
+      .replace("${product}", preOrder.productName)
+      .replace("${message}", preOrder.message);
 
-    await sendToAdmin(adminMessage, {
-      parse_mode: "Markdown",
-      callback_data: `preorder_confirm_${preOrder._id}`
-    });
+    await sendToAdmin(adminMessage, sid);
   } catch (error) {
-    console.error("Error sending pre-order notification to admin:", error);
+    log.error({ err: error }, "Error sending pre-order notification to admin");
   }
 };

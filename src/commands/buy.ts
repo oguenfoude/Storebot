@@ -1,55 +1,65 @@
-import { InlineKeyboard } from "grammy";
 import { ObjectId } from "mongodb";
+import { Keyboard } from "grammy";
 import { connectToDB } from "../db";
 import { User } from "../models/user";
 import { Product } from "../models/product";
 import { Category } from "../models/category";
-import { formatCurrency } from "../utils/messages";
 import { sendToAdmin } from "../helpers/adminNotificationHelper";
-import { bot } from "../botInstance";
 import { MyContext } from "../types";
+import { getMainMenuKeyboard } from "./start";
 import {
   createPreOrderInDB,
   notifyUserAboutPreOrder,
   notifyAdminAboutPreOrder,
 } from "./preorder";
+import { PreOrder } from "../models/preorder";
+import { t } from "../languages";
+import logger from "../helpers/logger";
+
+const log = logger.child({ tag: "BuyCmd" });
 
 const WHATSAPP_URL = process.env.SUPPORT_WHATSAPP_URL || "https://wa.me/213776863561";
+const TELEGRAM_URL = process.env.SUPPORT_TELEGRAM_URL || "https://t.me/Jeogooussama";
 
-
-const sendSupportMessage = async (ctx: MyContext): Promise<void> => {
-  const supportKeyboard = new InlineKeyboard().url(
-    "تواصل عبر WhatsApp",
-    WHATSAPP_URL
-  );
-
+const sendSupportMessage = async (ctx: MyContext, sellerId: ObjectId): Promise<void> => {
   await ctx.reply(
-    "رصيدك غير كافٍ لإتمام هذه العملية. يرجى التواصل مع الدعم الفني لإعادة شحن رصيدك.",
-    { reply_markup: supportKeyboard }
+    `${t().support.insufficientBalance}\n\n` +
+    `WhatsApp: ${WHATSAPP_URL}\n` +
+    `Telegram: ${TELEGRAM_URL}`
   );
 };
 
 export const initiateBuyCommand = async (
   ctx: MyContext,
-  productId: string
+  productId: string,
+  sellerId?: ObjectId
 ): Promise<void> => {
   try {
+    const sid = sellerId || (await import("../config/seller")).DEFAULT_SELLER_ID;
+
+    if (!ObjectId.isValid(productId)) {
+      await ctx.reply(t().buy.invalidProductId);
+      return;
+    }
+
     const db = await connectToDB();
     const product = await db.collection<Product>("products").findOne({
       _id: new ObjectId(productId),
+      sellerId: sid,
     });
 
     if (!product) {
-      await ctx.reply("المنتج غير موجود.");
+      await ctx.reply(t().general.productNotFound);
       return;
     }
 
     const user = await db.collection<User>("users").findOne({
       telegramId: ctx.from?.id.toString(),
+      sellerId: sid,
     });
 
     if (!user) {
-      await ctx.reply("المستخدم غير موجود.");
+      await ctx.reply(t().general.userNotFound);
       return;
     }
 
@@ -57,91 +67,102 @@ export const initiateBuyCommand = async (
 
     if (!product.isAvailable || product.emails.length === 0) {
       if (product.allowPreOrder) {
-        const { Keyboard } = await import("grammy");
-        const keyboard = new Keyboard()
-          .text("طلب مسبق للمنتج")
-          .row()
-          .text("إلغاء الشراء")
-          .resized();
-
+        const preorderKeyboard = new Keyboard()
+          .text(t().buttons.preorderProduct)
+          .text(t().buttons.cancelPurchase)
+          .resized()
+          .oneTime();
         await ctx.reply(
-          `المنتج "${product.name}" غير متوفر حاليًا. هل ترغب في طلبه مسبقًا؟`,
-          { reply_markup: keyboard }
+          t().buy.productUnavailable.replace("${name}", product.name) +
+          "\n\n" + t().buttons.preorderProduct + " / " + t().buttons.cancelPurchase,
+          { reply_markup: preorderKeyboard }
         );
       } else {
-        const { Keyboard } = await import("grammy");
-        const keyboard = new Keyboard().text("إلغاء الشراء").resized();
         await ctx.reply(
-          `عذراً، المنتج "${product.name}" غير متوفر حالياً ولا يدعم الطلب المسبق.`,
-          { reply_markup: keyboard }
+          t().buy.productUnavailableNoPreorder.replace("${name}", product.name)
         );
       }
       return;
     }
 
-    const { Keyboard } = await import("grammy");
-    const keyboard = new Keyboard()
-      .text("تأكيد الشراء")
-      .row()
-      .text("إلغاء الشراء")
-      .resized();
-
+    const confirmKeyboard = new Keyboard()
+      .text(t().buttons.confirmPurchase)
+      .text(t().buttons.cancelPurchase)
+      .resized()
+      .oneTime();
     await ctx.reply(
-      `هل ترغب في شراء المنتج "${product.name}" بسعر ${product.price} نقطة؟`,
-      { reply_markup: keyboard }
+      t().buy.confirmPurchase.replace("${name}", product.name).replace("${price}", product.price.toString()) +
+      "\n\n" + t().buttons.confirmPurchase + " / " + t().buttons.cancelPurchase,
+      { reply_markup: confirmKeyboard }
     );
 
   } catch (error) {
-    console.error("Error in initiateBuyCommand:", error);
-    await ctx.reply("حدث خطأ. يرجى المحاولة مرة أخرى لاحقًا.");
+    log.error({ err: error }, "Error in initiateBuyCommand");
+    ctx.session.awaitingBuyConfirmationProductId = null;
+    await ctx.reply(t().buy.errorProcessing);
   }
 };
 
 export const handleBuyConfirmation = async (
   ctx: MyContext,
-  productId: string
+  productId: string,
+  sellerId?: ObjectId
 ): Promise<void> => {
   try {
+    ctx.session.awaitingBuyConfirmationProductId = null;
+
     const telegramId = ctx.from?.id.toString();
     if (!telegramId) return;
+    const sid = sellerId || (await import("../config/seller")).DEFAULT_SELLER_ID;
+    log.info({ telegramId: ctx.from?.id, productId, sellerId: sid.toString() }, "Purchase initiated");
+
+    if (!ObjectId.isValid(productId)) {
+      await ctx.reply(t().buy.invalidProductId);
+      return;
+    }
 
     const db = await connectToDB();
-    const product = await db.collection<Product>("products").findOne({
-      _id: new ObjectId(productId),
-    });
-    if (!product || !product.isAvailable || !product.emails || product.emails.length === 0) {
-      await ctx.reply("نعتذر، نفذت الكمية من هذا المنتج. الرجاء المحاولة لاحقاً.");
+
+    const product = await db.collection<Product>("products").findOneAndUpdate(
+      {
+        _id: new ObjectId(productId),
+        sellerId: sid,
+        isAvailable: true,
+        emails: { $exists: true, $ne: [] },
+      },
+      { $pop: { emails: 1 } },
+      { returnDocument: "before" }
+    );
+    if (!product || !product.emails || product.emails.length === 0) {
+      await ctx.reply(t().buy.outOfStock);
       return;
     }
 
-    const user = await db.collection<User>("users").findOne({ telegramId });
+    const email = product.emails[product.emails.length - 1];
+
+    const user = await db.collection<User>("users").findOne({ telegramId, sellerId: sid });
     if (!user) {
-      await ctx.reply("المستخدم غير موجود.");
-      return;
-    }
-    if (user.balance < product.price) {
-      await ctx.reply("ليس لديك رصيد كافٍ لإتمام الشراء.");
-      await sendSupportMessage(ctx);
+      await ctx.reply(t().general.userNotFound);
       return;
     }
 
     const category = await db.collection<Category>("categories").findOne({
       _id: new ObjectId(product.categoryId),
+      sellerId: sid,
     });
-    const categoryName = category?.name || "غير محدد";
+    const categoryName = category?.name || "N/A";
 
-    const email = product.emails.shift();
-    const updatedBalance = user.balance - product.price;
     const transactionId = new ObjectId();
+    const now = new Date();
 
-    await db.collection<User>("users").updateOne(
-      { telegramId },
+    const balanceUpdate = await db.collection<User>("users").findOneAndUpdate(
+      { telegramId, sellerId: sid, balance: { $gte: product.price } },
       {
-        $set: { balance: updatedBalance },
+        $inc: { balance: -product.price },
         $push: {
           history: {
             type: "purchase",
-            date: new Date(),
+            date: now,
             productId: product._id,
             productName: product.name,
             price: product.price,
@@ -150,22 +171,34 @@ export const handleBuyConfirmation = async (
             transactionId,
           },
         },
-      }
+      },
+      { returnDocument: "after" }
     );
 
+    if (!balanceUpdate) {
+      await db.collection<Product>("products").updateOne(
+        { _id: new ObjectId(productId), sellerId: sid },
+        { $push: { emails: { $each: [email], $position: 0 } } }
+      );
+      await sendSupportMessage(ctx, sid);
+      return;
+    }
+
+    const updatedBalance = balanceUpdate.balance;
+
+    const remainingEmails = product.emails.length - 1;
     await db.collection<Product>("products").updateOne(
-      { _id: new ObjectId(productId) },
+      { _id: new ObjectId(productId), sellerId: sid },
       {
         $set: {
-          emails: product.emails,
-          isAvailable: product.emails.length > 0,
+          isAvailable: remainingEmails > 0,
         },
         $push: {
           archive: {
             transactionId,
             emailPassword: email,
             soldTo: new ObjectId(user._id),
-            soldAt: new Date(),
+            soldAt: now,
             price: product.price,
             buyerDetails: {
               name: user.fullName,
@@ -179,9 +212,10 @@ export const handleBuyConfirmation = async (
 
     await db.collection("history").insertOne({
       userId: user._id,
+      sellerId: sid,
       actionType: "purchase",
       description: `Purchased ${product.name}`,
-      date: new Date(),
+      date: now,
       productId: product._id,
       productName: product.name,
       price: product.price,
@@ -191,9 +225,7 @@ export const handleBuyConfirmation = async (
       emailSold: email,
     });
 
-    const now = new Date();
     const dateStr = now.toLocaleString('en-GB', {
-      timeZone: 'Asia/Jerusalem',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -204,42 +236,45 @@ export const handleBuyConfirmation = async (
     });
 
     ctx.session.awaitingBuyConfirmationProductId = null;
-    const { getMainMenuKeyboard } = await import("./start");
+    log.info({ telegramId: ctx.from?.id, productId, sellerId: sid.toString(), emailDelivered: true }, "Purchase completed");
 
     await ctx.reply(
-      `تم شراء المنتج بنجاح\n\n` +
-      `المنتج: ${product.name}\n` +
-      `السعر: ${product.price.toFixed(2)} نقطة\n` +
-      `البيانات: ${email || "-"}\n` +
-      `رصيدك المتبقي: ${updatedBalance.toFixed(2)} نقطة\n` +
-      `\nالوقت: ${dateStr}`,
+      t().buy.success
+        .replace("${name}", product.name)
+        .replace("${price}", product.price.toFixed(2))
+        .replace("${email}", email || "-")
+        .replace("${balance}", updatedBalance.toFixed(2))
+        .replace("${time}", dateStr),
       { reply_markup: getMainMenuKeyboard() }
     );
 
     await sendToAdmin(
-      `عملية شراء جديدة\n\n` +
-      `المنتج: ${product.name}\n` +
-      `السعر: ${product.price.toFixed(2)} نقطة\n` +
-      `البيانات: ${email || "-"}\n` +
-      `\nالمشتري: ${user.fullName || "غير محدد"}\n` +
-      `الهاتف: ${user.phoneNumber || "غير محدد"}\n` +
-      `تليجرام: ${user.telegramId}\n` +
-      `الكمية المتبقية: ${product.emails.length}\n` +
-      `الوقت: ${dateStr}`
+      `${t().admin.purchaseAlert}\n\n` +
+      `${t().admin.productName.replace("${name}", product.name)}\n` +
+      `${t().admin.price.replace("${price}", product.price.toFixed(2))}\n` +
+      `${t().admin.buyerName.replace("${name}", user.fullName || "N/A")}\n` +
+      `${t().admin.purchasePhone.replace("${phone}", user.phoneNumber || "N/A")}\n` +
+      `${t().admin.purchaseTelegram.replace("${id}", user.telegramId)}\n` +
+      `${t().admin.purchaseRemaining.replace("${quantity}", remainingEmails.toString())}\n` +
+      `${t().admin.purchaseTime.replace("${time}", dateStr)}`,
+      sid
     );
   } catch (error) {
-    console.error("Error in handleBuyConfirmation:", error);
-    await ctx.reply("حدث خطأ أثناء معالجة الشراء. يرجى المحاولة مرة أخرى.");
+    log.error({ err: error }, "Error in handleBuyConfirmation");
+    ctx.session.awaitingBuyConfirmationProductId = null;
+    await ctx.reply(t().buy.errorPurchasing);
   }
 };
 
-export const handlePreOrderMessage = async (ctx: MyContext): Promise<void> => {
+export const handlePreOrderMessage = async (ctx: MyContext, sellerId?: ObjectId): Promise<void> => {
   try {
+    const sid = sellerId || (await import("../config/seller")).DEFAULT_SELLER_ID;
+
     if (
       !ctx.session.awaitingPreOrderMessage ||
       !ctx.session.preOrderProductId
     ) {
-      await ctx.reply("لا يوجد عملية طلب مسبق نشطة.");
+      await ctx.reply(t().buy.preorderNoActive);
       return;
     }
 
@@ -251,97 +286,110 @@ export const handlePreOrderMessage = async (ctx: MyContext): Promise<void> => {
     const message = ctx.message?.text;
 
     if (!message) {
-      await ctx.reply("الرسالة غير صحيحة. يرجى المحاولة مرة أخرى.");
+      await ctx.reply(t().buy.preorderEmptyMessage);
       return;
     }
 
-    const user = await db.collection<User>("users").findOne({ telegramId });
+    const user = await db.collection<User>("users").findOne({ telegramId, sellerId: sid });
     if (!user) {
-      await ctx.reply("المستخدم غير موجود.");
+      await ctx.reply(t().general.userNotFound);
       return;
     }
 
-    const preOrder = await createPreOrderInDB(
-      new ObjectId(user._id),
-      new ObjectId(productId),
-      message
-    );
+    let preOrder: PreOrder | null = null;
+    try {
+      preOrder = await createPreOrderInDB(
+        new ObjectId(user._id),
+        new ObjectId(productId),
+        message,
+        sid
+      );
+    } catch (createError: any) {
+      // createPreOrderInDB throws specific errors (productNotFound, insufficientFunds)
+      // Forward the message to the user instead of showing generic error
+      await ctx.reply(createError.message || t().buy.preorderError);
+      ctx.session.awaitingPreOrderMessage = false;
+      ctx.session.preOrderProductId = null;
+      return;
+    }
 
     if (!preOrder) {
-      await ctx.reply(
-        "حدث خطأ أثناء إنشاء الطلب المسبق. يرجى المحاولة لاحقًا."
-      );
+      await ctx.reply(t().buy.preorderError);
       return;
     }
 
     await notifyUserAboutPreOrder(preOrder);
-    await notifyAdminAboutPreOrder(preOrder);
+    await notifyAdminAboutPreOrder(preOrder, sid);
 
     ctx.session.awaitingPreOrderMessage = false;
     ctx.session.preOrderProductId = null;
 
-    const { getMainMenuKeyboard } = await import("./start");
-    await ctx.reply("تم إرسال الطلب المسبق بنجاح.", { reply_markup: getMainMenuKeyboard() });
+    await ctx.reply(t().buy.preorderSent);
   } catch (error) {
-    console.error("Error in handlePreOrderMessage:", error);
-    await ctx.reply(
-      "حدث خطأ أثناء معالجة الطلب المسبق. يرجى المحاولة مرة أخرى."
-    );
+    log.error({ err: error }, "Error in handlePreOrderMessage");
+    ctx.session.awaitingPreOrderMessage = false;
+    ctx.session.preOrderProductId = null;
+    await ctx.reply(t().buy.preorderErrorProcessing);
   }
 };
 
 export const handleCancelPurchase = async (
   ctx: MyContext,
-  productId: string
+  productId: string,
+  sellerId?: ObjectId
 ): Promise<void> => {
   ctx.session.awaitingBuyConfirmationProductId = null;
   ctx.session.awaitingPreOrderMessage = false;
   ctx.session.preOrderProductId = null;
-  ctx.session.awaitingBuyConfirmationProductId = null;
+  const sid = sellerId || (await import("../config/seller")).DEFAULT_SELLER_ID;
 
   try {
     const db = await connectToDB();
-    const product = await db.collection("products").findOne({ _id: new ObjectId(productId) });
+    const product = await db.collection("products").findOne({ _id: new ObjectId(productId), sellerId: sid });
     if (product) {
       const { handleCategorySelection } = await import("./products");
-      await handleCategorySelection(ctx, product.categoryId.toString());
+      await handleCategorySelection(ctx, product.categoryId.toString(), sid);
       return;
     }
   } catch (e) {
-    console.error("Cancel purchase error:", e);
+    log.error({ err: e }, "Cancel purchase error");
   }
 
-  const { getMainMenuKeyboard } = await import("./start");
-  await ctx.reply("تم إلغاء العملية.", { reply_markup: getMainMenuKeyboard() });
+  await ctx.reply(t().buy.cancelPurchase, { reply_markup: getMainMenuKeyboard() });
 };
 
 export const handlePreOrderConfirmation = async (
   ctx: MyContext,
-  productId: string
+  productId: string,
+  sellerId?: ObjectId
 ): Promise<void> => {
   try {
+    const sid = sellerId || (await import("../config/seller")).DEFAULT_SELLER_ID;
     const db = await connectToDB();
     const product = await db.collection<Product>("products").findOne({
       _id: new ObjectId(productId),
+      sellerId: sid,
     });
 
     if (!product) {
-      await ctx.reply("المنتج غير موجود.");
+      await ctx.reply(t().general.productNotFound);
       return;
     }
 
     const user = await db.collection<User>("users").findOne({
       telegramId: ctx.from?.id.toString(),
+      sellerId: sid,
     });
 
     if (!user) {
-      await ctx.reply("المستخدم غير موجود.");
+      await ctx.reply(t().general.userNotFound);
       return;
     }
 
     if (user.balance < product.price) {
-      await ctx.reply("ليس لديك رصيد كافٍ لإتمام الطلب المسبق.");
-      await sendSupportMessage(ctx);
+      ctx.session.awaitingBuyConfirmationProductId = null;
+      await ctx.reply(t().buy.preorderConfirm);
+      await sendSupportMessage(ctx, sid);
       return;
     }
 
@@ -349,16 +397,9 @@ export const handlePreOrderConfirmation = async (
     ctx.session.preOrderProductId = productId;
     ctx.session.awaitingBuyConfirmationProductId = null;
 
-    const { Keyboard } = await import("grammy");
-    const keyboard = new Keyboard().text("إلغاء الشراء").resized();
-
-    await ctx.reply("يرجى كتابة ملاحظة أو رسالة خاصة للطلب المسبق:", {
-      reply_markup: keyboard
-    });
+    await ctx.reply(t().buy.preorderEnterMessage);
   } catch (error) {
-    console.error("Error in handlePreOrderConfirmation:", error);
-    await ctx.reply(
-      "حدث خطأ أثناء تأكيد الطلب المسبق. يرجى المحاولة مرة أخرى."
-    );
+    log.error({ err: error }, "Error in handlePreOrderConfirmation");
+    await ctx.reply(t().buy.preorderConfirmError);
   }
 };

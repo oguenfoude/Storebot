@@ -2,6 +2,7 @@ import { ObjectId } from "mongodb";
 
 export interface PreOrder {
   _id: ObjectId;
+  sellerId?: ObjectId;
   userId: ObjectId;
   productId: ObjectId;
   date: Date;

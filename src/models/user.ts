@@ -1,7 +1,21 @@
 import { ObjectId } from "mongodb";
 
+export interface UserHistoryEntry {
+  type: "purchase" | "recharge" | "preorder";
+  date: Date;
+  amount?: number;
+  productId?: ObjectId;
+  productName?: string;
+  price?: number;
+  categoryName?: string;
+  emailSold?: string;
+  transactionId?: ObjectId;
+  sellerId?: ObjectId;
+}
+
 export interface User {
   _id?: ObjectId;
+  sellerId?: ObjectId;
   telegramId: string;
   chatId: string;
   username: string;
@@ -11,26 +25,6 @@ export interface User {
   balance: number;
   registerDate: Date;
   isAccepted: boolean;
-  history?: UserEvent[];
-  paymentHistory?: PaymentHistoryEntry[];
-}
-
-export interface UserEvent {
-  type: "recharge" | "status" | "delete" | "purchase";
-  date: Date;
-  amount?: number;
-  status?: string;
-  productId?: ObjectId;
-  productName?: string;
-  price?: number;
-  emailSold?: string;
-  categoryName?: string;
-  adminAction?: "Recharge" | "Discount";
-  transactionId?: ObjectId;
-}
-
-export interface PaymentHistoryEntry {
-  date: Date;
-  amount: number;
-  description: string;
+  language?: string;
+  history?: UserHistoryEntry[];
 }

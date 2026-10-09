@@ -1,133 +1,107 @@
-import { InlineKeyboard, Keyboard } from "grammy";
 import { connectToDB } from "../db";
+import { InlineKeyboard } from "grammy";
 import { ObjectId, WithId } from "mongodb";
 import { Product } from "../models/product";
 import { Category } from "../models/category";
 import { MyContext } from "../types";
+import { t } from "../languages";
+import logger from "../helpers/logger";
 
-const DIVIDER = "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰";
+const log = logger.child({ tag: "ProductsCmd" });
 
 interface CategoryWithId extends WithId<Category> {
   name: string;
-  emoji?: string;
 }
 
-const formatPrice = (price: number): string => `${price} نقاط`;
+const formatPrice = (price: number): string => `${price} pts`;
 
-const getStatusText = (quantity: number, allowPreOrder: boolean): string => {
-  if (quantity > 0) return "[متوفر]";
-  return allowPreOrder ? "[طلب مسبق]" : "[نفذت الكمية]";
-};
-
-export const handleProductsCommand = async (ctx: MyContext): Promise<void> => {
+export const handleProductsCommand = async (ctx: MyContext, sellerId?: ObjectId): Promise<void> => {
   try {
+    const sid = sellerId || (await import("../config/seller")).DEFAULT_SELLER_ID;
+    log.info({ telegramId: ctx.from?.id, sellerId: sid.toString() }, "Products viewed");
     const db = await connectToDB();
     const categories = await db
       .collection<CategoryWithId>("categories")
-      .find()
+      .find({ sellerId: sid })
       .toArray();
 
     if (categories.length === 0) {
-      const msg = "عذراً، لا توجد فئات متاحة حالياً.";
-      if (ctx.callbackQuery) {
-        try { await ctx.deleteMessage(); } catch (e) {}
-      }
-      await ctx.reply(msg);
+      await ctx.reply(t().products.noCategories);
       return;
     }
 
-    const keyboard = new Keyboard();
-    for (let i = 0; i < categories.length; i += 2) {
-      if (i + 1 < categories.length) {
-        keyboard
-          .text(categories[i].name)
-          .text(categories[i + 1].name)
-          .row();
-      } else {
-        keyboard
-          .text(categories[i].name)
-          .row();
-      }
+    const lines: string[] = [t().products.chooseCategory, ""];
+    for (let i = 0; i < categories.length; i++) {
+      lines.push(`${i + 1}. ${categories[i].name}`);
     }
-    keyboard.text("رجوع للقائمة الرئيسية").resized();
+    lines.push("");
+    lines.push(t().products.chooseCategoryHint || "Type the category name to browse products.");
 
-    const msg = "اختر الفئة المطلوبة:";
-
-    if (ctx.callbackQuery) {
-      try { await ctx.deleteMessage(); } catch (e) {}
+    const keyboard = new InlineKeyboard();
+    for (const c of categories) {
+      keyboard.text(c.name, `store:cat:${c._id}`).row();
     }
-    await ctx.reply(msg, {
-      reply_markup: keyboard,
-    });
+    await ctx.reply(lines.join("\n"), { reply_markup: keyboard });
   } catch (error) {
-    console.error("Categories loading error:", error);
-    await ctx.reply("حدث خطأ أثناء تحميل الفئات. الرجاء المحاولة لاحقاً.");
+    log.error({ err: error }, "Categories loading error");
+    await ctx.reply(t().products.errorLoading);
   }
 };
 
 export const handleCategorySelection = async (
   ctx: MyContext,
-  categoryId: string
+  categoryId: string,
+  sellerId?: ObjectId
 ): Promise<void> => {
   try {
+    const sid = sellerId || (await import("../config/seller")).DEFAULT_SELLER_ID;
+    if (!ObjectId.isValid(categoryId)) {
+      await ctx.reply(t().products.errorLoadingProducts);
+      return;
+    }
     const db = await connectToDB();
     const category = await db
       .collection<CategoryWithId>("categories")
-      .findOne({ _id: new ObjectId(categoryId) });
+      .findOne({ _id: new ObjectId(categoryId), sellerId: sid });
 
     const products = await db
       .collection<Product>("products")
-      .find({ categoryId: new ObjectId(categoryId) })
+      .find({ categoryId: new ObjectId(categoryId), sellerId: sid })
       .toArray();
 
     if (products.length === 0) {
-      const messageText = `لا توجد منتجات متوفرة في فئة "${category?.name || "غير محدد"}" حالياً.`;
-      const replyMarkup = new InlineKeyboard().text("رجوع", "menu:products");
-      if (ctx.callbackQuery) {
-        await ctx.editMessageText(messageText, { reply_markup: replyMarkup });
-      } else {
-        await ctx.reply(messageText, { reply_markup: replyMarkup });
-      }
+      const messageText = t().products.noProducts.replace("${category}", category?.name || "N/A");
+      await ctx.reply(messageText);
       return;
     }
 
-    const keyboard = new InlineKeyboard();
-    products.forEach((product) => {
-      const quantity = product.emails.length;
-      let availabilityText = "";
+    const lines: string[] = [t().products.chooseProduct, ""];
+    for (let i = 0; i < products.length; i++) {
+      const product = products[i];
+      const quantity = product.emails?.length || 0;
+      let stockText = "";
       if (quantity > 0) {
-        availabilityText = `${quantity}`;
+        stockText = t().products.inStock.replace("${count}", quantity.toString());
       } else if (product.allowPreOrder) {
-        availabilityText = "طلب مسبق";
+        stockText = t().products.preOrderAvailable;
       } else {
-        availabilityText = "نفذت الكمية";
+        stockText = t().products.outOfStock;
       }
-      
-      const priceText = formatPrice(product.price);
-      
-      keyboard
-        .text(availabilityText, `product:${product._id}`)
-        .text(product.name, `product:${product._id}`)
-        .text(priceText, `product:${product._id}`)
-        .row();
-    });
-    keyboard.text("رجوع", "menu:products");
-
-    const categoryMessage = "الرجاء اختيار المنتج المطلوب (اضغط على أي زر يخص المنتج):";
-
-    if (ctx.callbackQuery) {
-      await ctx.editMessageText(categoryMessage, {
-        parse_mode: "Markdown",
-        reply_markup: keyboard,
-      });
-    } else {
-      await ctx.reply(categoryMessage, {
-        parse_mode: "Markdown",
-        reply_markup: keyboard,
-      });
+      lines.push(`${i + 1}. ${product.name} — ${formatPrice(product.price)} (${stockText})`);
     }
+    lines.push("");
+    lines.push(t().products.chooseProductHint || "Type the product name to purchase it.");
+
+    const keyboard = new InlineKeyboard();
+    for (const p of products) {
+      const quantity = p.emails?.length || 0;
+      const stockBadge = quantity > 0 ? `[${quantity}]` : (p.allowPreOrder ? "[Pre-order]" : "[Out of stock]");
+      keyboard.text(`${p.name} — ${formatPrice(p.price)} ${stockBadge}`, `store:prod:${p._id}`).row();
+    }
+    keyboard.row(InlineKeyboard.text(t().buttons.backToMainMenu || "« Back to Categories", "store:categories"));
+    await ctx.reply(lines.join("\n"), { reply_markup: keyboard });
   } catch (error) {
-    console.error("Product listing error:", error);
-    await ctx.reply("حدث خطأ أثناء تحميل المنتجات. الرجاء المحاولة لاحقاً.");
+    log.error({ err: error }, "Product listing error");
+    await ctx.reply(t().products.errorLoadingProducts);
   }
 };
